@@ -176,3 +176,7 @@ agents:
       summarize: false        # Phase 2: use LLM summarization
       summarize_model: null   # Phase 2: model for summarization (default: same model)
 ```
+
+# USER DECISION:
+
+We're going to do LLM-generated summarization and begin the context window anew with the system prompt + the summary. No more logging.
