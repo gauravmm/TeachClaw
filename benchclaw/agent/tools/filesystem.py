@@ -6,9 +6,63 @@ from typing import Any
 
 from benchclaw.agent.tools.base import FileSnapshot, Tool, ToolContext
 
+_WORKSPACE_PREFIXES = ("skills", "common")
 
-def _resolve_path(path: str, ctx: ToolContext) -> Path:
-    """Resolve path and enforce directory restriction."""
+
+def _is_within(path: Path, root: Path) -> bool:
+    """True if path is at or under root. Works for both file roots and dir roots.
+
+    `Path.relative_to` succeeds when path == root (returning `.`) and when
+    path is strictly under root, so a single check covers both shapes.
+    """
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_path(path: str, ctx: ToolContext, *, write: bool = False) -> Path:
+    """Resolve a tool-supplied path and enforce sandbox or legacy restrictions.
+
+    Sandbox mode (storage_root set on the context):
+        - Absolute paths are rejected.
+        - Relative paths resolve against storage_root.
+        - The post-resolve target must lie within at least one of the
+          configured roots (storage_root + read_roots, or storage_root +
+          write_roots when write=True).
+        - `..` segments are caught implicitly: after .resolve() any escape
+          fails the within-root check.
+
+    Legacy mode (no storage_root):
+        - Behaviour matches the prior tool: relative paths resolve against
+          ctx.workspace, absolute paths are accepted, and ctx.allowed_dir
+          (if set) is enforced as a single dir restriction.
+    """
+    if ctx.storage_root is not None:
+        if path.startswith("/"):
+            raise PermissionError(
+                "Absolute paths are not allowed in this conversation. Use a relative path."
+            )
+        # `skills/` and `common/` are workspace-rooted prefixes so the model
+        # can address shared resources without counting `..` segments.
+        # Anything else resolves under the conversation's own storage root.
+        first = path.split("/", 1)[0]
+        if first in _WORKSPACE_PREFIXES:
+            base = ctx.workspace
+        else:
+            base = ctx.storage_root
+        resolved = (base / path).expanduser().resolve()
+        sandbox_roots: tuple[Path, ...] = (ctx.storage_root.resolve(),)
+        extra = ctx.write_roots if write else ctx.read_roots
+        sandbox_roots = sandbox_roots + tuple(r.resolve() for r in extra)
+        if not any(_is_within(resolved, root) for root in sandbox_roots):
+            kind = "write" if write else "read"
+            raise PermissionError(
+                f"Path '{path}' resolves outside this conversation's allowed {kind} roots."
+            )
+        return resolved
+
     resolved = Path(path) if path.startswith("/") else ctx.workspace / path
     resolved = resolved.expanduser().resolve()
 
@@ -19,7 +73,16 @@ def _resolve_path(path: str, ctx: ToolContext) -> Path:
 
 
 def _display_path(path: Path, ctx: ToolContext) -> str:
-    """Return a workspace-relative display path when possible."""
+    """Return a sandbox- or workspace-relative display path when possible."""
+    if ctx.storage_root is not None:
+        try:
+            return str(path.relative_to(ctx.storage_root.resolve()))
+        except ValueError:
+            for root in ctx.read_roots:
+                try:
+                    return str(path.relative_to(root.resolve()))
+                except ValueError:
+                    continue
     try:
         return str(path.relative_to(ctx.workspace))
     except ValueError:
@@ -141,7 +204,7 @@ class WriteFileTool(Tool):
         }
 
     async def execute(self, ctx: ToolContext, path: str, content: str, **kwargs: Any) -> str:
-        file_path = _resolve_path(path, ctx)
+        file_path = _resolve_path(path, ctx, write=True)
         if file_path.exists():
             if not file_path.is_file():
                 raise ValueError(f"Not a file: {path}")
@@ -191,7 +254,7 @@ class EditFileTool(Tool):
     async def execute(
         self, ctx: ToolContext, path: str, old_str: str, new_str: str, **kwargs: Any
     ) -> str:
-        file_path = _resolve_path(path, ctx)
+        file_path = _resolve_path(path, ctx, write=True)
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {path}")
         if not file_path.is_file():

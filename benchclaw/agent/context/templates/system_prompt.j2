@@ -6,7 +6,7 @@ Do not generate tabular output. Use prose or lists instead.
 Time: {{ now }}
 Workspace: {{ workspace_path }}
 {% if channel and chat_id %}Session: {{ channel | xml_text }} / {{ chat_id | xml_text }}
-{% endif %}{% if memory_files %}Memory ({{ workspace_path }}/memory/): {{ memory_files | join(", ") | xml_text }}
+{% endif %}{% if storage_path %}Your storage (relative paths resolve here): {{ storage_path | xml_text }}
 {% endif %}
 
 {%- if chunk_elision_active %}
@@ -49,5 +49,9 @@ MCP tool names are prefixed with their server name, for example `mcp__hive__upda
 {{ file.content }}
 {% endfor %}
 {% endif %}
+{% if profile_text %}
+## What you know about this user
 
+{{ profile_text }}
+{% endif %}
 </SYSTEM-PROMPT>

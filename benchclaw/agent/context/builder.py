@@ -33,8 +33,6 @@ class ContextBuilder:
 
     def __init__(self, workspace: Path):
         self.workspace = workspace
-        self.memory_dir = workspace / "memory"
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.skills = SkillsLoader(workspace)
         self._jinja = Environment(
             loader=PackageLoader("benchclaw.agent.context", "templates"),
@@ -50,6 +48,8 @@ class ContextBuilder:
         chat_id: str | None = None,
         session_label: str | None = None,
         chunk_elision_active: bool = False,
+        profile_text: str | None = None,
+        storage_path: str | None = None,
     ) -> str:
         system = platform.system()
         bootstrap_files = [
@@ -58,13 +58,11 @@ class ContextBuilder:
             if (self.workspace / f).exists()
         ]
         all_skills = self.skills.get_all_skills()
-        memory_files = sorted(p.name for p in self.memory_dir.iterdir() if p.is_file())
         return self._jinja.get_template("system_prompt.j2").render(
             now=now_aware().strftime("%Y-%m-%d %H:%M (%A) %z"),
             runtime=f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}",
             workspace_path=str(self.workspace.expanduser().resolve()),
             bootstrap_files=bootstrap_files,
-            memory_files=memory_files,
             skills=all_skills,
             tools=[
                 {
@@ -78,6 +76,8 @@ class ContextBuilder:
             chat_id=chat_id,
             session_label=session_label,
             chunk_elision_active=chunk_elision_active,
+            profile_text=(profile_text or "").strip() or None,
+            storage_path=storage_path,
         )
 
     def build_context(

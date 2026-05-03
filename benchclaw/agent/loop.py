@@ -26,6 +26,7 @@ from benchclaw.bus import (
 from benchclaw.config import Config
 from benchclaw.media import MediaRepository
 from benchclaw.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from benchclaw import storage as storage_layout
 from benchclaw.session import (
     AssistantEvent,
     ConversationEvent,
@@ -254,19 +255,45 @@ class AgentLoop:
         addr: MessageAddress,
         pending_media: list[str] | None,
     ) -> list[dict[str, object]]:
+        storage_root = storage_layout.storage_root(self.workspace_path, addr)
         prompt = self.context.build_system_prompt(
             self.tools.values(),
             addr.channel,
             addr.chat_id,
             session.describe_current_session(),
             chunk_elision_active=self.config.compaction.elide_chunks_after_turn,
+            profile_text=storage_layout.read_profile(self.workspace_path, addr),
+            storage_path=str(storage_root),
         )
-        return session.render_llm_messages(
+        messages = session.render_llm_messages(
             prompt,
             self.media_repo,
             self._build_render_options(pending_media),
             max_messages=self.config.memory_window,
         )
+        return self._inject_storage_listing(messages, addr)
+
+    def _inject_storage_listing(
+        self,
+        messages: list[dict[str, object]],
+        addr: MessageAddress,
+    ) -> list[dict[str, object]]:
+        """Insert a synthetic storage listing right before the latest user message.
+
+        Living in the tail keeps the cacheable system-prompt prefix stable
+        across writes — see spec/TODO.md storage-layout notes.
+        """
+        listing = storage_layout.listing_for_user(self.workspace_path, addr)
+        if not listing:
+            return messages
+        listing_message: dict[str, object] = {
+            "role": "user",
+            "content": f"<storage_listing>\n{listing}\n</storage_listing>",
+        }
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].get("role") == "user":
+                return [*messages[:i], listing_message, *messages[i:]]
+        return messages
 
     @staticmethod
     def _last_user_event_index(events: list[ConversationEvent]) -> int:
@@ -494,12 +521,24 @@ class AgentLoop:
     async def _address_loop(self, addr: MessageAddress) -> None:
         session = self.sessions.get(addr)
         tracker = ToolCallTracker()
+        storage_layout.ensure_user_dirs(self.workspace_path, addr)
+        storage_root = storage_layout.storage_root(self.workspace_path, addr).resolve()
+        read_roots: tuple[Path, ...] = (
+            storage_layout.skills_dir(self.workspace_path).resolve(),
+            storage_layout.common_dir(self.workspace_path).resolve(),
+        )
+        write_roots: tuple[Path, ...] = (
+            storage_layout.scratch_dir(self.workspace_path, addr).resolve(),
+        )
         call_ctx = ToolContext(
             workspace=self.tools._master_ctx.workspace,
             bus=self.bus,
             media_repo=self.media_repo,
             address=addr,
             background_tasks=tracker.tasks,
+            storage_root=storage_root,
+            read_roots=read_roots,
+            write_roots=write_roots,
         )
         state = _AddressState()
 

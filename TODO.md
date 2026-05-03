@@ -41,19 +41,21 @@ Canonical design in **`spec/COMPACTION.md`**.
   - `brave_search(query)` for the open-web fallback (recent news, niche docs not in the corpus). Results aren't curated — model must surface a "open-web result, may be unreliable" disclaimer when citing these.
   - Both tools live next to `search` / `fetch_doc`, distinct names so the model can pick deliberately. Document the precedence in the lecture system prompt: corpus first, Wikipedia for definitions/biographies, Brave only when the other two miss.
 
-### Storage layout (per-conversation sandbox)
+### Storage layout (per-conversation sandbox) — **DONE (awaiting test)**
 Replaces the `memory/` folder convention entirely. Memory is just files in the conversation's storage directory.
 
-- Per-conversation root at `storage/<channel>/<id>/` (nested, not flat — channels like WhatsApp/email have IDs containing `@` `+` `.`). Media subdirectory at `storage/<channel>/<id>/media/`. For Telegram lecture use, `<id>` = `user.id` (stable per account, DM-only assumption); group-chat shape is a separate decision.
-- Skills stay at `workspace/skills/`, read-only for everyone, listed with descriptions in the system prompt as today.
-- `common/` is **read-only** by default — prof prepares shared resources, students read them.
-- Each user gets `common/scratch/<user_id>.md` as a known-writable file inside common: "read everyone's, write your own" with no overlap and no last-write-wins corruption.
-- Tool-level path enforcement (not prompt-level): `read_file` / `write_file` take a per-call allow-list (conversation root + skills read + common read + own scratch write) and reject absolute paths plus `..` traversal. Prompt instructions are a hint, not a sandbox.
-- Top-level listing of `storage/<channel>/<id>/` is injected as a **synthetic tail turn** (e.g. a fake user/system message right before the latest user message), *not* in the system prompt. Reasons: the system-prompt prefix (tools, persona, skills index) stays cache-stable across writes; the tail turn is uncached anyway because the new user message lives there. Listing format: deterministic sort, names + sizes, no timestamps that bucket-shift mid-session.
-- Per-user profile lives at `storage/telegram/<user_id>/profile.md` (durable facts the bot may elicit and store: industry, role, depth preference). A short summary is injected into the end of the system prompt each turn, and is not persisted in the session.
-- `/forgetme` = delete `storage/<channel>/<user_id>/` recursively (clears profile, auth, and media). `/reset` only clears in-memory session state (history, last_retrieval, personality); does not touch files.
-- `storage/_admin/` (used by auth) is **out of scope** for all user-facing tools — the bot service reads it directly with hard-coded paths. Path enforcement must reject any tool-driven attempt to read or write under it.
-- Drop the `memory_files` Jinja branch and the `memory_dir` field on the context builder.
+- [x] Per-conversation root at `storage/<channel>/<chat_id>/` (nested), media subdirectory pre-created. For Telegram DM, `chat_id == user.id`. Group-chat shape still a separate decision (not in scope for the lecture).
+- [x] Skills stay at `workspace/skills/`, read-only — addressable from inside the sandbox via the `skills/` prefix.
+- [x] `common/` is read-only by default. Addressable from inside the sandbox via the `common/` prefix.
+- [x] Each user gets `common/scratch/<chat_id>/` as a known-writable directory. **Spec deviation:** a per-user dir rather than a single `<user_id>.md` file — uniform dir-vs-file enforcement is simpler and the file convention can sit on top.
+- [x] Tool-level path enforcement in `benchclaw/agent/tools/filesystem.py:_resolve_path`. Sandbox mode (engaged when `ToolContext.storage_root` is set) rejects absolute paths and any post-resolve target outside `storage_root + read_roots` (or `+ write_roots` for writes). The `skills/` and `common/` path prefixes resolve under the workspace so the model doesn't have to count `..` segments.
+- [x] Top-level storage listing injected as a synthetic tail turn (`<storage_listing>...</storage_listing>` user message) right before the latest user message in `AgentLoop._inject_storage_listing`. System-prompt prefix stays cache-stable. Listing format is deterministic (alpha sort, file sizes, dir item counts, no timestamps).
+- [x] Per-user profile at `storage/<channel>/<chat_id>/profile.md`; current contents injected into the system prompt under "What you know about this user" via a new `profile_text` template variable. Read fresh each turn; not persisted in the session.
+- [x] `storage/_admin/` is out of scope for all user-facing tools — the only way the model can address it would be via a literal "_admin" path under storage_root, which is outside the sandbox roots and rejected. The auth bot service will read it directly with hard-coded paths when that lands.
+- [x] Dropped `memory_files` from `system_prompt.j2` and `memory_dir` from `ContextBuilder`.
+- [x] `AgentLoop._address_loop` calls `storage_layout.ensure_user_dirs(workspace, addr)` on entry; constructs the `call_ctx` with sandbox fields populated.
+- Tests in `tests/test_filesystem_tools.py` cover: absolute paths rejected; `..` traversal outside storage rejected; `_admin/` access rejected; storage-root relative paths allowed; `skills/` and `common/` prefixes resolve under the workspace; common/ writes rejected; own-scratch writes allowed; cross-user scratch writes rejected.
+- [ ] `/forgetme` and `/reset` semantics land with the Telegram bot service work — the sandbox here is what makes them safe. Documented in `spec/TELEGRAM.md` and `spec/AUTH.md`.
 
 ### Lecture customization
 - Adapt `workspace/AGENTS.md` style for classroom persona (replace OcelliBot framing, drop personal-assistant specifics like Notion clearinghouse, image annotation, memory-folder conventions that don't apply). Replace memory-folder guidance with the per-conversation storage model from the Storage layout section.
