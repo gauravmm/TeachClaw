@@ -2,11 +2,11 @@
 
 ## Lecture deployment (in-class use, AI-in-business RAG)
 
-### Logging removal
-- Remove the voluntary `LogTool` and `LogStore` (`benchclaw/agent/tools/memory.py`).
-- Drop the `("log", LogTool)` entry from `benchclaw/agent/tools/builtins.py` and any `ctx.log_store` plumbing.
-- Strip log-related guidance from `workspace/AGENTS.md` (the "Use the log tool…" / "Do not log routine compliance…" lines) and any references in `system_prompt.j2` / config.
-- Delete `workspace/logs/` handling and the `log.jsonl` summary path used by the current reactive compaction.
+### Logging removal — **DONE (awaiting test)**
+- [x] Remove the voluntary `LogTool` and `LogStore` (`benchclaw/agent/tools/memory.py` deleted).
+- [x] Drop the `("log", LogTool)` entry from `benchclaw/agent/tools/builtins.py` and `ctx.log_store` plumbing in `agent/tools/base.py` and `agent/loop.py`.
+- [x] Strip log-related guidance from `workspace/AGENTS.md` and `workspace_default/AGENTS.md`. (`system_prompt.j2` had no log references.)
+- [x] Drop the `log.jsonl` summary path from session compaction (the old `Session.compact(log_store)` is replaced by a `compact_with_summary(summary)` method; the call site in `_maybe_compact_session` is stubbed pending the compaction rebuild). No `workspace/logs/` directory existed in this repo.
 
 ### Compaction rebuild
 Canonical design in **`spec/COMPACTION.md`** (LLM-generated summarization, restart with `system_prompt + summary`, single proactive prompt-size trigger calibrated to ~18k for the 24k lecture window, stale-chunk elision with system-prompt hint, persisted summary).

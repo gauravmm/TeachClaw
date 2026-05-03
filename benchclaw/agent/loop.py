@@ -12,7 +12,6 @@ from loguru import logger
 from benchclaw.agent.context import ContextBuilder
 from benchclaw.agent.tools.base import ToolContext
 from benchclaw.agent.tools.mcp_manager import MCPManager
-from benchclaw.agent.tools.memory import LogStore
 from benchclaw.agent.tools.registry import ToolRegistry
 from benchclaw.bus import (
     InboundMessage,
@@ -129,7 +128,6 @@ class AgentLoop:
         master_ctx = ToolContext(
             workspace=config.workspace_path,
             bus=bus,
-            log_store=LogStore(config.workspace_path),
             media_repo=media_repo,
         )
         self.master_ctx = master_ctx
@@ -211,16 +209,14 @@ class AgentLoop:
     def _maybe_compact_session(
         self, session: Session, addr: MessageAddress, total_tokens: int
     ) -> None:
-        if total_tokens <= self.config.context_window * _COMPACT_THRESHOLD:
-            return
-        logger.warning(
-            f"Compacting session {addr}: {total_tokens}/{self.config.context_window} tokens"
-        )
-        session.compact(self.master_ctx.log_store)
-        logger.warning(
-            f"Session {addr} compacted: {len(session.events)} events remain, "
-            f"compacted_through={session.compacted_through}"
-        )
+        # Compaction is being rebuilt; see spec/COMPACTION.md. The previous
+        # log-store-driven path has been removed and a proactive,
+        # summarization-based path will replace it.
+        if total_tokens > self.config.context_window * _COMPACT_THRESHOLD:
+            logger.warning(
+                f"Session {addr} prompt {total_tokens}/{self.config.context_window} "
+                f"tokens — compaction not yet implemented; see spec/COMPACTION.md."
+            )
 
     async def _apply_llm_response(
         self,
@@ -367,7 +363,6 @@ class AgentLoop:
         call_ctx = ToolContext(
             workspace=self.tools._master_ctx.workspace,
             bus=self.bus,
-            log_store=self.tools._master_ctx.log_store,
             media_repo=self.media_repo,
             address=addr,
             background_tasks=tracker.tasks,

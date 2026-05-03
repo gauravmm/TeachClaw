@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from benchclaw.agent.tools.memory import LogStore
 from benchclaw.bus import MessageAddress
 from benchclaw.session import (
     MAX_SESSIONS,
@@ -129,16 +128,16 @@ def test_session_clear(tmp_path: Path):
     assert session.compacted_through == -1
 
 
-@pytest.mark.asyncio
-async def test_session_compact_uses_log_store(tmp_path: Path) -> None:
-    async with LogStore(tmp_path) as log_store:
-        log_store.append("recent log entry")
-        session = Session(addr=MessageAddress(channel="telegram", chat_id="1"))
+def test_session_compact_with_summary_replaces_history() -> None:
+    session = Session(addr=MessageAddress(channel="telegram", chat_id="1"))
+    session.append(UserEvent(content="hello"))
+    session.append(UserEvent(content="world"))
 
-        session.compact(log_store)
+    session.compact_with_summary("User said hello, then world.")
 
-    assert isinstance(session.events[-1], SummaryEvent)
-    assert "recent log entry" in session.events[-1].content
+    assert len(session.events) == 1
+    assert isinstance(session.events[0], SummaryEvent)
+    assert session.events[0].content == "User said hello, then world."
     assert session.compacted_through == 0
 
 

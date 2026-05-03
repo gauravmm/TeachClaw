@@ -10,7 +10,6 @@ from typing import Any, ClassVar, Literal, Protocol, TypedDict, Unpack
 from loguru import logger
 from pathvalidate import sanitize_filename
 
-from benchclaw.agent.tools.memory import LogStore
 from benchclaw.bus import MediaMetadata, MessageAddress, ToolResult
 from benchclaw.utils import _parse_timestamp, ensure_aware, now_aware
 
@@ -364,15 +363,16 @@ class Session:
         self.events.append(event)
         self.updated_at = now_aware()
 
-    def compact(self, log_store: LogStore | None, *, log_limit: int = 20) -> None:
-        recent_activity = log_store.read_recent(n=log_limit) if log_store else "[No logs available]"
-        self.append(
-            SummaryEvent(
-                content="[Context compacted to stay within context window limits.]\nRecent activity log:\n"
-                + recent_activity
-            )
-        )
-        self.compacted_through = len(self.events) - 1
+    def compact_with_summary(self, summary: str) -> None:
+        """Replace conversation history with a single summary event.
+
+        The system prompt is rebuilt fresh on every turn by the agent loop,
+        so dropping all prior events here gives a clean restart with only
+        the summary as conversational context.
+        """
+        self.events = [SummaryEvent(content=summary)]
+        self.compacted_through = 0
+        self.updated_at = now_aware()
 
     @staticmethod
     def _render_event_message(
