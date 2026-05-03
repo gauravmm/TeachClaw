@@ -401,9 +401,11 @@ class TelegramChannel(BaseChannel):
             self._stop_typing(event.address.chat_id)
 
     async def _typing_loop(self, chat_id: str) -> None:
-        """Repeatedly send 'typing' action until cancelled."""
+        """Repeatedly send 'typing' action, capped at 8 invocations (~32s)."""
         try:
-            while self._app:
+            for _ in range(8):
+                if not self._app:
+                    return
                 await self._app.bot.send_chat_action(chat_id=int(chat_id), action="typing")
                 await asyncio.sleep(4)
         except asyncio.CancelledError:

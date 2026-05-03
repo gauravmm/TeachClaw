@@ -27,8 +27,8 @@
 ### RAG integration (AI-in-business knowledge)
 - Implement the `search` / `fetch_doc` tool contract from lecture-knowledge `spec/ROUGH.md §2` (citation IDs + chunk metadata returned to the model).
 - Hybrid retriever: BM25 + dense, hybrid-scored. Decide whether the index ships in-repo, behind an HTTP service, or via MCP.
-- Citation rendering: footnote-style `[1] [2]` inline plus a "Sources" section; respect a per-user `cite` toggle.
-- Persist `last_retrieval` (chunk IDs) on session state so a "Show sources" follow-up can dump the raw chunks.
+- Citation emission: model wraps source-bearing claims in `<citation id="chunk_42">…short claim…</citation>` tags. Channel-agnostic; the Telegram channel strips the tags from the displayed text and keeps a per-message map from claim → chunk_id for the reaction-driven sources flow (see Telegram section). System prompt must include a worked example so small Gemma emits the tag reliably. Per-user `cite` toggle controls whether the model emits citations at all.
+- Persist `last_retrieval` (chunk IDs) on session state and keep a per-`message_id` map of `{citations, raw_chunks}` with a 24h TTL so users can react to a past message and get the sources back.
 - Admin `/reload_corpus` to re-index from disk without restarting the bot.
 - Companion lookup tools (sit alongside the curated corpus, not inside the retrieval ranking):
   - `wiki_lookup(query)` against Wikipedia — `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=<q>&format=json` for search, `https://en.wikipedia.org/api/rest_v1/page/summary/<title>` for ~200-word lead extract + canonical URL + thumbnail, `/api/rest_v1/page/html/<title>` or `/page/wikitext/<title>` for the full body. Free, no auth, just a UA header. Sturdy fallback for "who is X / what is Y" queries the corpus doesn't cover; citations are clean (CC BY-SA + canonical URL).
@@ -58,7 +58,9 @@ Replaces the `memory/` folder convention entirely. Memory is just files in the c
 - Slash commands via `setMyCommands` at startup, default scope for students, admin scope for the prof: `/start`, `/help`, `/personality`, `/sources`, `/scope`, `/cite`, `/reset`, `/forgetme`, admin `/reload_corpus`, `/stats`.
 - Per-user profile keyed by Telegram `user.id` (stable per account). Bot may ask durable questions (industry, role, depth preference) and store answers; a short profile summary is injected into the system prompt each turn. `/reset` clears conversation history only; `/forgetme` deletes the profile file as well.
 - Inline keyboards for choice-style commands (`/personality`, `/scope`) since Telegram has no arg autocomplete; typed args still accepted as a power-user shortcut.
-- Reply rendering: one message per turn with answer body, optional citations + Sources, and an inline-keyboard row of up to 3 model-suggested follow-ups plus a "Show sources" button. Split on paragraph boundaries above ~3500 chars.
+- Reply rendering: one message per turn with answer body (citation tags stripped) and an inline-keyboard row of up to 3 model-suggested follow-ups. Split on paragraph boundaries above ~3500 chars. No "Show sources" button — that flow is reaction-driven (below).
+- Reaction handler: enable `message_reaction` in `setWebhook` `allowed_updates` and dispatch on emoji. Generic dispatcher keyed by emoji (not a hardcoded eyes branch) so future affordances (👍/👎 feedback, ❓ explain, 🔁 retry/regenerate) plug in cheaply. Initial mapping: 👀 → reply with the source chunks for that message, using the per-`message_id` map from RAG. Acknowledge by reacting back with 👀 via `setMessageReaction` so the user has feedback that the trigger fired.
+- Citation discoverability: on the *first* cited reply of a session, append a one-line hint like *"(react 👀 to any reply for sources)"*. Tracked per-user; never repeated within a session. Costs ~10 tokens once.
 - Image input: accept photo + caption, route to multimodal call. Image is *not* indexed; model may emit a follow-up `search` call. Downscale to 1024px long edge, 1 image/turn.
 - Mermaid rendering pipeline (post-processor in the Telegram channel for the lecture; renderer itself lives in a standalone module so a future skill/tool wrapper or a second channel can reuse it without a rewrite):
   - House the renderer in something like `benchclaw/rendering/mermaid.py` — pure function from Mermaid source + theme to PNG bytes (or cached path), no Telegram knowledge.
@@ -82,7 +84,5 @@ Replaces the `memory/` folder convention entirely. Memory is just files in the c
   - secret session-auth (users must enter a code to authenticate a session; rotating the code revokes access)
     - rate limits for failed tries.
   - Check if support for "…" (typing indicator) works well for long times.
-  - Check if reading emoji responses to messages or writing emoji responses on user messages is possible.
-  - Check if we need any new features for the handoff doc.
 
 
