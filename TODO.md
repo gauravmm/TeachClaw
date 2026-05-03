@@ -8,12 +8,19 @@
 - [x] Strip log-related guidance from `workspace/AGENTS.md` and `workspace_default/AGENTS.md`. (`system_prompt.j2` had no log references.)
 - [x] Drop the `log.jsonl` summary path from session compaction (the old `Session.compact(log_store)` is replaced by a `compact_with_summary(summary)` method; the call site in `_maybe_compact_session` is stubbed pending the compaction rebuild). No `workspace/logs/` directory existed in this repo.
 
-### Compaction rebuild
-Canonical design in **`spec/COMPACTION.md`** (LLM-generated summarization, restart with `system_prompt + summary`, single proactive prompt-size trigger calibrated to ~18k for the 24k lecture window, stale-chunk elision with system-prompt hint, persisted summary).
+### Compaction rebuild — **DONE (awaiting test)**
+Canonical design in **`spec/COMPACTION.md`**.
 
-- Implement per the spec. Wire config knobs: `compaction.threshold`, `compaction.summarize_model`, `compaction.elide_chunks_after_turn`, summarization-prompt template path.
-- Validate with the dummy-LLM harness (multi-turn sessions, summary handoff, post-compaction continuity).
-- Ensure the persisted summary is included in transcript dumps (see Telegram observability).
+- [x] LLM-generated summarization in `AgentLoop._summarize_conversation`; the summarizer is called with `tools=None` so it cannot take actions.
+- [x] `Session.compact_with_summary(summary, *, keep_from_index)` replaces history with a `SummaryEvent`, optionally keeping events from the most recent UserEvent onward verbatim (so the user's current question and any pending media stay attached).
+- [x] Single proactive trigger in `_maybe_compact_proactive`: estimate `len(json.dumps(messages)) // 4`, fire above `threshold * (context_window − max_tokens)`. Defaults: `context_window=24000`, `max_tokens=2048`, `threshold=0.82` ⇒ trigger at ~18k.
+- [x] Stale-chunk elision in `Session._render_history`: ToolEvents whose `tool_name` matches `compaction.elide_tool_names` and which sit before the most recent UserEvent get their content replaced with a stub. The underlying event is not mutated; only the rendered view changes.
+- [x] System-prompt hint (`chunk_elision_active` Jinja flag) tells the model that prior retrieval results may be elided and to call the retrieval tool again rather than quote remembered text.
+- [x] Config knobs added to `CompactionConfig`: `threshold`, `summarize_model` (null ⇒ same as agent model), `elide_chunks_after_turn`, `elide_tool_names`.
+- [x] Summary is persisted as a `SummaryEvent` on the session, so it survives reload and shows up in any transcript dump.
+- Tests in `tests/test_agent_loop.py`: proactive compaction calls the summarizer + main provider in order, `tools=None` for the summarizer, latest user message stays verbatim post-compaction; under-threshold runs do not compact; elision replaces old retrieval ToolEvents with a stub while keeping the most recent verbatim.
+- [ ] Validate with the dummy-LLM harness once that lands (multi-turn sessions, summary handoff, post-compaction continuity).
+- [ ] Ensure the persisted summary is included in transcript dumps (Telegram observability work).
 
 ### Dummy-LLM harness (testing prerequisite)
 - Add a deterministic fake provider behind the existing provider interface (`benchclaw/providers/`) that:

@@ -49,6 +49,7 @@ class ContextBuilder:
         channel: str | None = None,
         chat_id: str | None = None,
         session_label: str | None = None,
+        chunk_elision_active: bool = False,
     ) -> str:
         system = platform.system()
         bootstrap_files = [
@@ -76,6 +77,7 @@ class ContextBuilder:
             channel=channel,
             chat_id=chat_id,
             session_label=session_label,
+            chunk_elision_active=chunk_elision_active,
         )
 
     def build_context(

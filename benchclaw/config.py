@@ -18,16 +18,36 @@ from benchclaw.channels.telegrm import TelegramConfig
 from benchclaw.channels.whatsapp.channel import WhatsAppConfig
 
 
+_DEFAULT_ELIDE_TOOLS: tuple[str, ...] = (
+    "search",
+    "fetch_doc",
+    "wiki_lookup",
+    "brave_search",
+    "web_search",
+    "web_fetch",
+)
+
+
+class CompactionConfig(BaseModel):
+    """Compaction strategy. See spec/COMPACTION.md for the full design."""
+
+    threshold: float = 0.82
+    summarize_model: str | None = None  # null => same model as the agent
+    elide_chunks_after_turn: bool = True
+    elide_tool_names: tuple[str, ...] = _DEFAULT_ELIDE_TOOLS
+
+
 class AgentConfig(BaseModel):
     """Default agent configuration."""
 
     workspace: str = "./workspace"
     model: str = "anthropic/claude-opus-4-5"
-    max_tokens: int = 8192
+    max_tokens: int = 2048
     temperature: float = 0.7
     max_tool_iterations: int = 20
     memory_window: int = 50
-    context_window: int = 22000
+    context_window: int = 24000
+    compaction: CompactionConfig = Field(default_factory=CompactionConfig)
 
 
 class AgentsConfig(BaseModel):

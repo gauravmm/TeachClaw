@@ -15,6 +15,7 @@ from benchclaw.session import (
     AssistantEvent,
     RenderOptions,
     Session,
+    SummaryEvent,
     SystemEvent,
     ToolEvent,
     UserEvent,
@@ -34,6 +35,25 @@ class _FakeProvider(LLMProvider):
         temperature: float = 0.7,
     ) -> LLMResponse:
         return self._response
+
+
+class _ScriptedProvider(LLMProvider):
+    """Provider that returns scripted responses in order, recording each call."""
+
+    def __init__(self, responses: list[LLMResponse]) -> None:
+        self._responses = list(responses)
+        self.calls: list[dict[str, Any]] = []
+
+    async def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+    ) -> LLMResponse:
+        self.calls.append({"messages": messages, "tools": tools, "model": model})
+        return self._responses.pop(0)
 
 
 def _make_loop(tmp_path: Path, response: LLMResponse) -> AgentLoop:
@@ -228,3 +248,140 @@ def test_collapse_user_messages_returns_one_user_event() -> None:
     assert isinstance(event, UserEvent)
     assert event.content == "[alice] first\n[bob] second"
     assert event.media == ["a.png", "b.png"]
+
+
+@pytest.mark.asyncio
+async def test_proactive_compaction_summarizes_when_estimate_exceeds_threshold(tmp_path: Path) -> None:
+    config = Config()
+    config.agents.master.workspace = str(tmp_path)
+    config.agents.master.context_window = 200
+    config.agents.master.max_tokens = 50
+    config.agents.master.compaction.threshold = 0.5
+
+    provider = _ScriptedProvider(
+        [
+            LLMResponse(content="SUMMARY OF PRIOR CHAT"),
+            LLMResponse(content="OK, here is the answer."),
+        ]
+    )
+    loop = AgentLoop(
+        config=config,
+        bus=MessageBus(),
+        provider=provider,
+        media_repo=MediaRepository(tmp_path),
+    )
+    addr = MessageAddress("telegram", "123")
+    session = Session(addr)
+    for i in range(6):
+        session.append(UserEvent(content=f"old user msg {i} " + "x" * 200))
+        session.append(AssistantEvent(content=f"old assistant reply {i} " + "y" * 200))
+    session.append(UserEvent(content="latest question"))
+    tracker = ToolCallTracker()
+
+    async with loop.tools:
+        call_ctx = ToolContext(
+            workspace=loop.tools._master_ctx.workspace,
+            bus=loop.bus,
+            media_repo=loop.media_repo,
+            address=addr,
+            background_tasks=tracker.tasks,
+        )
+        await loop._process_llm_turn(
+            session=session,
+            tracker=tracker,
+            call_ctx=call_ctx,
+            addr=addr,
+        )
+
+    assert len(provider.calls) == 2, "expected one summarize call + one main call"
+    summary_call = provider.calls[0]
+    main_call = provider.calls[1]
+    assert summary_call["tools"] is None, "summarizer must not see the agent toolset"
+    assert any(
+        isinstance(m.get("content"), str) and "summary" in m["content"].lower()
+        for m in summary_call["messages"]
+    ), "summarize prompt missing"
+    assert isinstance(session.events[0], SummaryEvent)
+    assert session.events[0].content == "SUMMARY OF PRIOR CHAT"
+    assert isinstance(session.events[1], UserEvent)
+    assert session.events[1].content == "latest question"
+    assert isinstance(session.events[-1], AssistantEvent)
+    assert session.events[-1].content == "OK, here is the answer."
+    main_messages = main_call["messages"]
+    assert main_messages[0]["role"] == "system"
+    assert any(
+        m["role"] == "user" and "latest question" in str(m.get("content", ""))
+        for m in main_messages
+    ), "latest user message must be visible verbatim to the main call"
+
+
+@pytest.mark.asyncio
+async def test_no_compaction_when_under_threshold(tmp_path: Path) -> None:
+    config = Config()
+    config.agents.master.workspace = str(tmp_path)
+    config.agents.master.context_window = 100000
+    config.agents.master.max_tokens = 4096
+
+    provider = _ScriptedProvider([LLMResponse(content="hello back")])
+    loop = AgentLoop(
+        config=config,
+        bus=MessageBus(),
+        provider=provider,
+        media_repo=MediaRepository(tmp_path),
+    )
+    addr = MessageAddress("telegram", "123")
+    session = Session(addr)
+    session.append(UserEvent(content="hi"))
+    tracker = ToolCallTracker()
+
+    async with loop.tools:
+        call_ctx = ToolContext(
+            workspace=loop.tools._master_ctx.workspace,
+            bus=loop.bus,
+            media_repo=loop.media_repo,
+            address=addr,
+            background_tasks=tracker.tasks,
+        )
+        await loop._process_llm_turn(
+            session=session,
+            tracker=tracker,
+            call_ctx=call_ctx,
+            addr=addr,
+        )
+
+    assert len(provider.calls) == 1, "no summarization expected when under threshold"
+    assert all(not isinstance(e, SummaryEvent) for e in session.events)
+
+
+def test_render_options_elide_replaces_old_retrieval_results() -> None:
+    addr = MessageAddress("telegram", "1")
+    session = Session(addr=addr)
+    session.append(UserEvent(content="first question"))
+    session.append(
+        ToolEvent(
+            tool_call_id="tc1",
+            tool_name="search",
+            content="big chunk body 1",
+        )
+    )
+    session.append(AssistantEvent(content="answered first"))
+    session.append(UserEvent(content="second question"))
+    session.append(
+        ToolEvent(
+            tool_call_id="tc2",
+            tool_name="search",
+            content="big chunk body 2",
+        )
+    )
+
+    rendered = session.render_llm_messages(
+        "system",
+        media_repo=None,
+        options=RenderOptions(elide_tool_names=("search",)),
+        max_messages=50,
+    )
+
+    tool_messages = [m for m in rendered if m["role"] == "tool"]
+    assert len(tool_messages) == 2
+    assert "elided" in tool_messages[0]["content"]
+    assert tool_messages[1]["content"] == "big chunk body 2"

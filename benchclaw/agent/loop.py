@@ -28,6 +28,7 @@ from benchclaw.media import MediaRepository
 from benchclaw.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from benchclaw.session import (
     AssistantEvent,
+    ConversationEvent,
     RenderOptions,
     Session,
     SessionManager,
@@ -36,7 +37,23 @@ from benchclaw.session import (
     UserEvent,
 )
 
-_COMPACT_THRESHOLD = 0.8
+_SUMMARIZE_SYSTEM_PROMPT = """\
+You are a conversation summarizer for an agentic AI assistant.
+
+Compress the conversation below into a brief summary that preserves:
+1. Facts the assistant has established or learned about the user or task.
+2. Decisions made and the reasoning behind them.
+3. Open tasks, commitments, or pending follow-ups.
+4. User preferences and any context about who they are or what they want.
+5. The user's most recent question or request, verbatim if short.
+
+Drop conversational filler, repeated greetings, and routine acknowledgments.
+The summary will replace the conversation in the assistant's context window,
+so it must stand alone as the only record of what was discussed.
+Be concise and factual. Plain prose or bulleted lists are both fine.
+"""
+
+_SUMMARIZE_MAX_TOKENS = 2048
 
 
 @dataclass
@@ -206,17 +223,141 @@ class AgentLoop:
             )
             return None
 
-    def _maybe_compact_session(
-        self, session: Session, addr: MessageAddress, total_tokens: int
-    ) -> None:
-        # Compaction is being rebuilt; see spec/COMPACTION.md. The previous
-        # log-store-driven path has been removed and a proactive,
-        # summarization-based path will replace it.
-        if total_tokens > self.config.context_window * _COMPACT_THRESHOLD:
-            logger.warning(
-                f"Session {addr} prompt {total_tokens}/{self.config.context_window} "
-                f"tokens — compaction not yet implemented; see spec/COMPACTION.md."
+    @staticmethod
+    def _estimate_tokens(messages: list[dict[str, object]]) -> int:
+        """Cheap heuristic: ~4 characters per token. See spec/COMPACTION.md.
+
+        Wide threshold margin (~18% of input budget) absorbs the heuristic's
+        ~30% inaccuracy. Replace with a tokenizer-backed estimate later if
+        the trigger turns out to misfire in either direction.
+        """
+        return len(json.dumps(messages, ensure_ascii=False)) // 4
+
+    def _input_budget(self) -> int:
+        return max(self.config.context_window - self.config.max_tokens, 1)
+
+    def _build_render_options(
+        self,
+        pending_media: list[str] | None = None,
+    ) -> RenderOptions:
+        elide_tools: tuple[str, ...] = ()
+        if self.config.compaction.elide_chunks_after_turn:
+            elide_tools = tuple(self.config.compaction.elide_tool_names)
+        return RenderOptions(
+            pending_media_paths=pending_media or None,
+            elide_tool_names=elide_tools,
+        )
+
+    def _build_prompt_and_messages(
+        self,
+        session: Session,
+        addr: MessageAddress,
+        pending_media: list[str] | None,
+    ) -> list[dict[str, object]]:
+        prompt = self.context.build_system_prompt(
+            self.tools.values(),
+            addr.channel,
+            addr.chat_id,
+            session.describe_current_session(),
+            chunk_elision_active=self.config.compaction.elide_chunks_after_turn,
+        )
+        return session.render_llm_messages(
+            prompt,
+            self.media_repo,
+            self._build_render_options(pending_media),
+            max_messages=self.config.memory_window,
+        )
+
+    @staticmethod
+    def _last_user_event_index(events: list[ConversationEvent]) -> int:
+        for i in range(len(events) - 1, -1, -1):
+            if isinstance(events[i], UserEvent):
+                return i
+        return -1
+
+    async def _summarize_conversation(
+        self,
+        session: Session,
+        addr: MessageAddress,
+        events_to_summarize: list[ConversationEvent],
+    ) -> str | None:
+        """Run a separate provider call to summarize the given events.
+
+        Returns the summary text, or None if the provider call failed.
+        """
+        # Render the doomed events as a one-shot conversation, swapping the
+        # main system prompt for a summarization instruction. We deliberately
+        # do not pass tools to this call: the summarizer is not allowed to
+        # take actions, only to compress.
+        history_messages = session._render_history(
+            events_to_summarize,
+            options=self._build_render_options(),
+        )
+        summarize_messages: list[dict[str, object]] = [
+            {"role": "system", "content": _SUMMARIZE_SYSTEM_PROMPT},
+            *history_messages,
+            {
+                "role": "user",
+                "content": "Now produce the summary as instructed above.",
+            },
+        ]
+        summarize_model = self.config.compaction.summarize_model or self.config.model
+        try:
+            response = await self.provider.chat(
+                messages=summarize_messages,
+                tools=None,
+                model=summarize_model,
+                max_tokens=_SUMMARIZE_MAX_TOKENS,
+                temperature=0.3,
             )
+        except Exception as e:
+            logger.error(f"Summarization failed for {addr}: {e}")
+            return None
+        return (response.content or "").strip() or None
+
+    async def _maybe_compact_proactive(
+        self,
+        session: Session,
+        addr: MessageAddress,
+        llm_messages: list[dict[str, object]],
+    ) -> bool:
+        """Estimate prompt size and summarize if over threshold.
+
+        Returns True if compaction happened and the caller should re-render.
+        """
+        estimate = self._estimate_tokens(llm_messages)
+        threshold_tokens = int(self.config.compaction.threshold * self._input_budget())
+        if estimate <= threshold_tokens:
+            return False
+
+        last_user_idx = self._last_user_event_index(session.events)
+        # Summarize everything strictly before the most recent user message; if
+        # there is no prior user message (or the only user message is the very
+        # first event), there is nothing useful to summarize without losing the
+        # latest question, so we skip this round and let the next request
+        # through unchanged.
+        if last_user_idx <= 0:
+            logger.warning(
+                f"Session {addr} prompt {estimate} tokens > {threshold_tokens} threshold "
+                f"but no compactable history before the latest user message; skipping."
+            )
+            return False
+
+        to_summarize = list(session.events[:last_user_idx])
+        logger.warning(
+            f"Compacting session {addr}: {estimate}/{self._input_budget()} input tokens "
+            f"(>{threshold_tokens} threshold); summarizing {len(to_summarize)} events."
+        )
+        summary = await self._summarize_conversation(session, addr, to_summarize)
+        if summary is None:
+            return False
+
+        session.compact_with_summary(summary, keep_from_index=last_user_idx)
+        logger.warning(
+            f"Session {addr} compacted: {len(session.events)} events remain, "
+            f"summary {len(summary)} chars."
+        )
+        return True
 
     async def _apply_llm_response(
         self,
@@ -233,7 +374,6 @@ class AgentLoop:
             f"{usage.get('completion_tokens', '?')} completion, "
             f"{usage.get('total_tokens', '?')} total / {self.config.context_window} budget"
         )
-        self._maybe_compact_session(session, addr, usage.get("total_tokens", 0))
         content = (response.content or "").rstrip("\n")
         if response.has_tool_calls:
             tool_call_dicts = [
@@ -340,15 +480,9 @@ class AgentLoop:
     ) -> None:
         if pending_media is None:
             pending_media = []
-        prompt = self.context.build_system_prompt(
-            self.tools.values(), addr.channel, addr.chat_id, session.describe_current_session()
-        )
-        llm_messages = session.render_llm_messages(
-            prompt,
-            self.media_repo,
-            RenderOptions(pending_media_paths=pending_media),
-            max_messages=self.config.memory_window,
-        )
+        llm_messages = self._build_prompt_and_messages(session, addr, pending_media)
+        if await self._maybe_compact_proactive(session, addr, llm_messages):
+            llm_messages = self._build_prompt_and_messages(session, addr, pending_media)
         self._dump_messages(llm_messages)
         if pending_media:
             pending_media.clear()

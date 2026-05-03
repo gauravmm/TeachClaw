@@ -24,6 +24,7 @@ class RenderOptions:
     include_reasoning: bool = True
     pending_media_paths: list[str] | None = None
     max_inline_image_url_chars: int | None = None
+    elide_tool_names: tuple[str, ...] = ()  # tool names whose past-turn results are elided
 
 
 class MediaRenderer(Protocol):
@@ -363,14 +364,21 @@ class Session:
         self.events.append(event)
         self.updated_at = now_aware()
 
-    def compact_with_summary(self, summary: str) -> None:
-        """Replace conversation history with a single summary event.
+    def compact_with_summary(self, summary: str, *, keep_from_index: int = -1) -> None:
+        """Replace conversation history with a SummaryEvent.
 
-        The system prompt is rebuilt fresh on every turn by the agent loop,
-        so dropping all prior events here gives a clean restart with only
-        the summary as conversational context.
+        If keep_from_index < 0 (default), every event is replaced. If
+        keep_from_index >= 0, events[:keep_from_index] are summarized and
+        events[keep_from_index:] are kept verbatim after the summary. The
+        typical caller passes the index of the most recent UserEvent so
+        that the user's current question stays in the prompt verbatim and
+        attached media still resolves.
         """
-        self.events = [SummaryEvent(content=summary)]
+        if keep_from_index < 0 or keep_from_index >= len(self.events):
+            kept: list[ConversationEvent] = []
+        else:
+            kept = list(self.events[keep_from_index:])
+        self.events = [SummaryEvent(content=summary), *kept]
         self.compacted_through = 0
         self.updated_at = now_aware()
 
@@ -400,6 +408,42 @@ class Session:
                 return i
         return None
 
+    @staticmethod
+    def _last_user_index(history: list[ConversationEvent]) -> int:
+        for i in range(len(history) - 1, -1, -1):
+            if isinstance(history[i], UserEvent):
+                return i
+        return -1
+
+    @staticmethod
+    def _maybe_elide_tool_event(
+        event: ConversationEvent,
+        index: int,
+        last_user_index: int,
+        elide_tool_names: tuple[str, ...],
+    ) -> ConversationEvent:
+        """Return an elided copy of an old retrieval ToolEvent, or the event unchanged.
+
+        Elision applies only to ToolEvents whose tool_name is listed in
+        elide_tool_names AND which sit before the most recent user message in
+        the rendered history. The current turn's retrieval result is left
+        verbatim so the model can reason over it; older results are replaced
+        with a short stub to save context. The underlying event in the session
+        is not mutated — only this rendering view is changed.
+        """
+        if not elide_tool_names or not isinstance(event, ToolEvent):
+            return event
+        if index >= last_user_index:
+            return event
+        if event.tool_name not in elide_tool_names:
+            return event
+        return ToolEvent(
+            timestamp=event.timestamp,
+            content=f"[{event.tool_name} result elided to save context; call again to re-fetch]",
+            tool_call_id=event.tool_call_id,
+            tool_name=event.tool_name,
+        )
+
     def _build_pending_media_blocks(
         self,
         media_repo: MediaRenderer | None,
@@ -420,12 +464,16 @@ class Session:
     ) -> list[dict[str, object]]:
         options = options or RenderOptions()
         last_reasoning_idx = self._find_last_reasoning_index(history)
+        last_user_idx = self._last_user_index(history)
         pending_media_blocks = self._build_pending_media_blocks(media_repo, options)
         messages: list[dict[str, object]] = []
         for i, event in enumerate(history):
+            rendered_event = self._maybe_elide_tool_event(
+                event, i, last_user_idx, options.elide_tool_names
+            )
             messages.append(
                 self._render_event_message(
-                    event,
+                    rendered_event,
                     options=RenderOptions(
                         include_reasoning=options.include_reasoning and i == last_reasoning_idx,
                         pending_media_paths=None,

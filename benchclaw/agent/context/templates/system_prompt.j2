@@ -9,6 +9,9 @@ Workspace: {{ workspace_path }}
 {% endif %}{% if memory_files %}Memory ({{ workspace_path }}/memory/): {{ memory_files | join(", ") | xml_text }}
 {% endif %}
 
+{%- if chunk_elision_active %}
+Prior retrieval results in this conversation may have been elided to save context. If you need to quote a chunk you saw earlier, call the relevant retrieval tool again rather than relying on memory. The latest retrieval result in the current turn is verbatim.
+{% endif %}
 ## Skills
 
 If a skill matches the request, read its `SKILL.md` before proceeding.
