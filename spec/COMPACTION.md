@@ -207,20 +207,30 @@ per-turn or per-history caps.
 
 ```
 fire when:  estimate(prompt) > threshold * (context_window − max_tokens)
-default:    threshold = 0.7
+default:    threshold = 0.82  (operating point for the lecture profile)
 ```
 
 For the anticipated lecture model `google/gemma-4-e4b-it` running with
 a 24k working window and a ~2k output reserve, the trigger fires at
-~15.4k of input. Gemma 4 e4b's native max is 128k, so 24k is well
+~18k of input. Gemma 4 e4b's native max is 128k, so 24k is well
 inside its quality envelope; the trigger exists for budget control
 rather than to dodge attention degradation.
 
+The threshold sits well above the conservative 0.7 default that would
+make sense without chunk elision. Because elision (below) replaces
+verbatim chunk bodies in turns *after* a retrieval, the cross-turn
+prompt footprint is dominated by the system prompt + recent history +
+elision stubs, not by accumulated chunk text. The transient retrieval
+response of the current turn is allowed to consume the difference
+between the trigger (18k) and the absolute input budget (22k), giving
+the model a 4k slack window for the live tool-result event without
+tripping compaction. Without elision we would want the lower 0.7
+default; with it, 0.82 is the right operating point.
+
 Token estimation can use a cheap heuristic (`len(json) // 4`) for a
-first pass and tighten to a tokenizer-backed estimate later. The
-threshold's 30% headroom is deliberately wide enough that the
-heuristic's ~30% inaccuracy will not push us over `context_window`
-unexpectedly.
+first pass and tighten to a tokenizer-backed estimate later. The 4k
+slack between the trigger and the absolute input budget covers both
+the heuristic's ~30% inaccuracy and the in-flight retrieval response.
 
 ## Stale-chunk elision
 
@@ -264,7 +274,7 @@ agents:
     context_window: 24000
     max_tokens: 2048
     compaction:
-      threshold: 0.7              # fraction of (context_window - max_tokens)
+      threshold: 0.82             # fraction of (context_window - max_tokens); higher than the no-elision default of 0.7
       summarize_model: null       # null → same model as the agent
       summarize_prompt: ...       # template path or inline
       elide_chunks_after_turn: true

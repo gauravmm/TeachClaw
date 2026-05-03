@@ -9,7 +9,7 @@
 - Delete `workspace/logs/` handling and the `log.jsonl` summary path used by the current reactive compaction.
 
 ### Compaction rebuild
-Canonical design in **`spec/COMPACTION.md`** (LLM-generated summarization, restart with `system_prompt + summary`, single proactive trigger at ~70% of `context_window − max_tokens`, stale-chunk elision with system-prompt hint, persisted summary).
+Canonical design in **`spec/COMPACTION.md`** (LLM-generated summarization, restart with `system_prompt + summary`, single proactive prompt-size trigger calibrated to ~18k for the 24k lecture window, stale-chunk elision with system-prompt hint, persisted summary).
 
 - Implement per the spec. Wire config knobs: `compaction.threshold`, `compaction.summarize_model`, `compaction.elide_chunks_after_turn`, summarization-prompt template path.
 - Validate with the dummy-LLM harness (multi-turn sessions, summary handoff, post-compaction continuity).
@@ -43,7 +43,7 @@ Replaces the `memory/` folder convention entirely. Memory is just files in the c
 - Each user gets `common/scratch/<user_id>.md` as a known-writable file inside common: "read everyone's, write your own" with no overlap and no last-write-wins corruption.
 - Tool-level path enforcement (not prompt-level): `read_file` / `write_file` take a per-call allow-list (conversation root + skills read + common read + own scratch write) and reject absolute paths plus `..` traversal. Prompt instructions are a hint, not a sandbox.
 - Top-level listing of `storage/<channel>/<id>/` is injected as a **synthetic tail turn** (e.g. a fake user/system message right before the latest user message), *not* in the system prompt. Reasons: the system-prompt prefix (tools, persona, skills index) stays cache-stable across writes; the tail turn is uncached anyway because the new user message lives there. Listing format: deterministic sort, names + sizes, no timestamps that bucket-shift mid-session.
-- Per-user profile lives at `storage/telegram/<user_id>/profile.md` (durable facts the bot may elicit and store: industry, role, depth preference). A short summary is injected into the system prompt each turn.
+- Per-user profile lives at `storage/telegram/<user_id>/profile.md` (durable facts the bot may elicit and store: industry, role, depth preference). A short summary is injected into the end of the system prompt each turn, and is not persisted in the session.
 - `/forgetme` = delete `storage/<channel>/<user_id>/` recursively (clears profile, auth, and media). `/reset` only clears in-memory session state (history, last_retrieval, personality); does not touch files.
 - `storage/_admin/` (used by auth) is **out of scope** for all user-facing tools — the bot service reads it directly with hard-coded paths. Path enforcement must reject any tool-driven attempt to read or write under it.
 - Drop the `memory_files` Jinja branch and the `memory_dir` field on the context builder.
