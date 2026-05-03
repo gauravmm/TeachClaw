@@ -177,6 +177,110 @@ agents:
       summarize_model: null   # Phase 2: model for summarization (default: same model)
 ```
 
-# USER DECISION:
+# DECISION
 
-We're going to do LLM-generated summarization and begin the context window anew with the system prompt + the summary. No more logging.
+The earlier sections are background. This section is the canonical
+design.
+
+## Strategy
+
+LLM-generated summarization. On trigger, a separate model call
+condenses the prior conversation into a single summary, and the
+context window is **restarted** with `system_prompt + summary`. The
+old events are not retained as fallback context. There is no tiered
+history, no log-store summary, no `SummaryEvent` appended to the
+existing event list.
+
+The summarizer model defaults to the main agent model. Configurable
+to a cheaper model later if cost/latency becomes a concern.
+
+The summarization prompt is templated and lives alongside the system
+prompt template; it should ask the summarizer to preserve facts,
+decisions, open tasks, user preferences, and any commitments the agent
+has made — and to drop conversational filler.
+
+## Trigger
+
+A single proactive trigger, keyed to total prompt size, fires
+**before** the next request is sent. No reactive trigger; no separate
+per-turn or per-history caps.
+
+```
+fire when:  estimate(prompt) > threshold * (context_window − max_tokens)
+default:    threshold = 0.7
+```
+
+For the anticipated lecture model `google/gemma-4-e4b-it` running with
+a 24k working window and a ~2k output reserve, the trigger fires at
+~15.4k of input. Gemma 4 e4b's native max is 128k, so 24k is well
+inside its quality envelope; the trigger exists for budget control
+rather than to dodge attention degradation.
+
+Token estimation can use a cheap heuristic (`len(json) // 4`) for a
+first pass and tighten to a tokenizer-backed estimate later. The
+threshold's 30% headroom is deliberately wide enough that the
+heuristic's ~30% inaccuracy will not push us over `context_window`
+unexpectedly.
+
+## Stale-chunk elision
+
+Before summarization is even considered, retrieved chunk bodies in
+tool-result events are elided from turns *after* the retrieval call.
+The verbatim text is replaced with a short stub:
+
+```
+[chunks elided — ids: chunk_42, chunk_57, chunk_88]
+```
+
+Citation IDs stay visible so prior `[1] [2]` references still resolve,
+and the agent can call `fetch_doc(id)` to re-hydrate the chunk on
+demand. This is not a substitute for summarization — it is a cheap
+prefix step that keeps the summarizer's input lean when it does fire,
+and meaningfully extends the number of turns we get before
+summarization becomes necessary.
+
+When elision is enabled (the default), the lecture system prompt or
+persona must include a hint along the lines of *"Prior retrieved
+chunks have been elided to save space; if you need to quote one, call
+`fetch_doc(id)` rather than relying on memory."* Without this, small
+models will occasionally hallucinate quotes from chunks they can no
+longer see.
+
+## Persistence
+
+The generated summary is persisted on the session so that:
+
+- A bot restart mid-class does not lose conversational context.
+- Post-class debugging can inspect what the summarizer chose to keep
+  versus drop.
+- Transcript dumps include the summary alongside the verbatim turns
+  that survived.
+
+## Config
+
+```yaml
+agents:
+  master:
+    context_window: 24000
+    max_tokens: 2048
+    compaction:
+      threshold: 0.7              # fraction of (context_window - max_tokens)
+      summarize_model: null       # null → same model as the agent
+      summarize_prompt: ...       # template path or inline
+      elide_chunks_after_turn: true
+```
+
+`memory_window` and `max_tool_result_tokens` from the earlier
+brainstorm are dropped — the new design does not need a sliding
+event window or a per-tool-result truncation knob (chunk elision
+covers the only case that mattered).
+
+## Out of scope
+
+- Pinned events (Phase 3 in the brainstorm above). Not needed for
+  one-hour lecture sessions.
+- Tiered / hierarchical summarization. The restart model is simpler
+  and good enough for the session length we expect.
+- Summarizer-of-summarizer chaining. If a single session ever
+  generates enough material to summarize twice, that is the signal
+  to revisit, not to pre-engineer for.
