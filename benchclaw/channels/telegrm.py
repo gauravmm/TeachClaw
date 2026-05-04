@@ -73,9 +73,23 @@ from benchclaw.rendering import mermaid as mermaid_renderer
 # ---------------------------------------------------------------------------
 
 # Reaction that asks the bot to reply with the source citations for a reply.
-SOURCES_REACTION = "❤️"
+# Telegram's reaction API delivers emojis without the FE0F variant selector
+# (e.g. "❤", not "❤️"); _normalize_emoji() below strips it on both sides
+# so the constants here work whether or not you typed the variant selector.
+SOURCES_REACTION = "❤"
 # Reaction that asks the bot to reply with the tool-call trace for a reply.
 TRACE_REACTION = "🔥"
+
+
+_VARIATION_SELECTOR_16 = "️"
+
+
+def _normalize_emoji(emoji: str) -> str:
+    """Strip the U+FE0F variation selector so comparisons survive whether
+    the emoji was written with or without the emoji-presentation modifier
+    (e.g. ❤ vs. ❤️)."""
+    return emoji.replace(_VARIATION_SELECTOR_16, "")
+
 
 # Hard cap on per-user message-map entries. Once exceeded, the oldest entries
 # (already-expired tombstones first) are dropped entirely so memory stays
@@ -142,17 +156,55 @@ class _UserState:
 
 
 _CITATION_RE = re.compile(r"<citation\s+id=\"([^\"]+)\">(.*?)</citation>", re.DOTALL)
+# Bare-tag fallback: small models often emit `<citation id="X">` as a
+# footnote marker at the end of a sentence with no closing tag. We accept
+# both the self-closing variant `<citation id="X"/>` and the open-only form.
+_CITATION_BARE_RE = re.compile(r"<citation\s+id=\"([^\"]+)\"\s*/?>", re.IGNORECASE)
+_LIST_BULLET_RE = re.compile(r"^\s*[-*•]\s*")
 
 
 def _strip_citations(text: str) -> tuple[str, list[dict[str, str]]]:
+    """Pull `<citation>` markers out of model text.
+
+    Two recognized forms, in order:
+      * `<citation id="X">claim</citation>` — wrapped, claim is the inner text.
+      * `<citation id="X">` with no closing tag — treated as a footnote
+        marker; the claim is the preceding sentence in the text up to the
+        tag (back to the last `.`/`!`/`?` or newline).
+
+    In both cases the marker is stripped from the displayed text. Bullet
+    prefixes (`- `, `* `, `• `) are trimmed off the recovered claim so the
+    reaction listing stays readable.
+    """
     citations: list[dict[str, str]] = []
 
-    def _replace(m: re.Match) -> str:
+    def _wrapped(m: re.Match) -> str:
         citations.append({"id": m.group(1), "claim": m.group(2).strip()})
         return m.group(2)
 
-    cleaned = _CITATION_RE.sub(_replace, text)
-    return cleaned, citations
+    text = _CITATION_RE.sub(_wrapped, text)
+
+    # Iteratively handle the bare form. We rebuild the text each iteration
+    # so the recovered claim reflects the already-cleaned prose around it.
+    while True:
+        m = _CITATION_BARE_RE.search(text)
+        if m is None:
+            break
+        prefix = text[: m.start()]
+        boundary = max(
+            prefix.rfind("."),
+            prefix.rfind("!"),
+            prefix.rfind("?"),
+            prefix.rfind("\n"),
+        )
+        claim = prefix[boundary + 1 :] if boundary >= 0 else prefix
+        claim = _LIST_BULLET_RE.sub("", claim).strip()
+        citations.append({"id": m.group(1), "claim": claim[:300]})
+        text = text[: m.start()] + text[m.end() :]
+
+    # Trim the space the bare tag often leaves orphaned before punctuation.
+    text = re.sub(r" +([.,;:!?])", r"\1", text)
+    return text, citations
 
 
 def _markdown_to_telegram_html(text: str) -> str:
@@ -1072,9 +1124,10 @@ class TelegramChannel(BaseChannel):
     async def _dispatch_reaction(
         self, emoji: str, message_id: int, st: _UserState, chat_id: int
     ) -> None:
-        if emoji == SOURCES_REACTION:
+        normalized = _normalize_emoji(emoji)
+        if normalized == _normalize_emoji(SOURCES_REACTION):
             await self._reaction_sources(message_id, st, chat_id)
-        elif emoji == TRACE_REACTION:
+        elif normalized == _normalize_emoji(TRACE_REACTION):
             await self._reaction_trace(message_id, st, chat_id)
         # 👍/👎/❓/🔁 reserved for future, no-op for now.
 
