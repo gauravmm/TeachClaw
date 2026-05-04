@@ -122,4 +122,12 @@ def test_outbound_message_carries_tool_trace(tmp_path: Path) -> None:
         ToolCallTrace(id="tc1", name="search", arguments={"q": "x"}, result="ok")
     ]
     assert state.tool_call_trace[0].name == "search"
-    assert AgentLoop._truncate_for_trace("a" * 500).endswith("…")
+
+
+def test_stringify_tool_result_preserves_full_content() -> None:
+    """The agent loop deliberately does NOT truncate trace results — the
+    channel needs the raw text to extract structured payloads (like kb
+    records for the citation listing)."""
+    long_str = "x" * 500
+    assert AgentLoop._stringify_tool_result(long_str) == long_str
+    assert AgentLoop._stringify_tool_result({"a": 1}) == '{"a": 1}'

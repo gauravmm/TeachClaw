@@ -61,6 +61,20 @@ Be concise and factual. Plain prose or bulleted lists are both fine.
 
 _SUMMARIZE_MAX_TOKENS = 2048
 
+# When any of these MCP tool prefixes returns a result, the agent loop drops
+# a one-shot system reminder right after the ToolEvent so the citation rule
+# is the most recent thing the model sees before composing its reply. Small
+# models (Gemma-class) won't reliably follow a rule that lives only in the
+# system prompt.
+_CITATION_TOOL_PREFIXES: tuple[str, ...] = ("kb__",)
+_CITATION_REMINDER = (
+    "You just received results from a knowledge-base tool. Every claim in "
+    "your next reply that draws on these results MUST be wrapped as "
+    '<citation id="ID_FROM_RECORD">claim sentence</citation>, copying the '
+    "`id` field verbatim from each record. Untagged paraphrase of kb "
+    "content is not acceptable. The closing </citation> is required."
+)
+
 
 @dataclass
 class _AddressState:
@@ -440,12 +454,15 @@ class AgentLoop:
         return True
 
     @staticmethod
-    def _truncate_for_trace(result: object, limit: int = 240) -> str:
-        text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
-        text = text.replace("\n", " ").strip()
-        if len(text) > limit:
-            return text[: limit - 1] + "…"
-        return text
+    def _stringify_tool_result(result: object) -> str:
+        """Coerce a tool result to a string for the trace.
+
+        We deliberately do NOT truncate or reflow here — the channel needs
+        the raw text to extract structured payloads (e.g. kb_records for
+        the citation listing). Display-time truncation belongs in the
+        channel.
+        """
+        return result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
 
     async def _apply_llm_response(
         self,
@@ -573,14 +590,21 @@ class AgentLoop:
         needs_llm = False
         start_typing = False
 
+        nudge_citations = False
         for result in batch.tool_results:
             tracker.handle_result(result, session)
             for entry in state.tool_call_trace:
                 if entry.id == result.tool_call_id:
-                    entry.result = self._truncate_for_trace(result.result)
+                    entry.result = self._stringify_tool_result(result.result)
                     break
+            if any(result.tool_name.startswith(p) for p in _CITATION_TOOL_PREFIXES):
+                nudge_citations = True
         if batch.tool_results and not tracker.pending:
             self._flush_pending_system_events(session, state)
+            # One reminder per batch is enough: dropping it once right before
+            # the LLM call is what makes the rule "current" in context.
+            if nudge_citations:
+                session.append(SystemEvent(content=_CITATION_REMINDER))
             needs_llm = True
 
         for event in batch.system_events:
