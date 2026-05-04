@@ -161,6 +161,4 @@ require the caller to already be authenticated via the regular flow.
 - `storage/_admin/` is created with mode 0700 if it doesn't exist on
   startup. Same for `secret.json`. Tighten if running multi-user on the
   host.
-- A bot restart with no `secret.json` on disk should refuse to start
-  rather than auto-generating, to avoid accidentally inviting a
-  cohort with a code the prof never saw.
+- A bot restart with no `secret.json` on disk should auto-generate.
