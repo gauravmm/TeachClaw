@@ -4,4 +4,15 @@ repos:
     hooks:
       - id: ruff
         args: [--fix]
-      - id: ruff-format
+  - repo: local
+    hooks:
+      # Run `ruff format` and re-stage any files it rewrote. The commit only
+      # aborts when ruff itself fails (e.g. parse error). Pure reformatting
+      # no longer interrupts the commit.
+      - id: ruff-format-restage
+        name: ruff format (auto-restage)
+        entry: bash -c 'ruff format "$@" && git add -- "$@"' --
+        language: python
+        additional_dependencies: [ruff==0.15.6]
+        types_or: [python, pyi]
+        require_serial: true
