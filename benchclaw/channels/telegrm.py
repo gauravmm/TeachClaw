@@ -4,8 +4,9 @@ Implements spec/TELEGRAM.md and integrates with spec/AUTH.md. Highlights:
 
 - Slash commands wired through ``CommandHandler`` with auth middleware that
   short-circuits everything except ``/start``, ``/help``, ``/auth``.
-- Reaction handler dispatches per-emoji from a generic table; 👀 surfaces
-  source citations (stub until RAG lands), 🔍 surfaces a tool-call trace.
+- Reaction handler dispatches per-emoji from the generic ``SOURCES_REACTION``
+  / ``TRACE_REACTION`` constants below; the former surfaces source citations
+  (stub until RAG lands), the latter surfaces a tool-call trace.
 - Per-message_id map (24h TTL) holds tool calls and parsed citations so a
   reaction on an old reply can recover them.
 - Citation tags ``<citation id="..">..</citation>`` are stripped from the
@@ -30,6 +31,9 @@ from typing import Any
 from loguru import logger
 from telegram import (
     BotCommand,
+    BotCommandScopeAllChatAdministrators,
+    BotCommandScopeAllGroupChats,
+    BotCommandScopeAllPrivateChats,
     BotCommandScopeChat,
     BotCommandScopeDefault,
     InlineKeyboardButton,
@@ -63,6 +67,21 @@ from benchclaw.bus import (
 from benchclaw.channels.base import BaseChannel, ChannelConfig
 from benchclaw.media import MediaRepository, extension_for_mime
 from benchclaw.rendering import mermaid as mermaid_renderer
+
+# ---------------------------------------------------------------------------
+# Reaction emojis (edit here to change which reactions trigger which view)
+# ---------------------------------------------------------------------------
+
+# Reaction that asks the bot to reply with the source citations for a reply.
+SOURCES_REACTION = "❤️"
+# Reaction that asks the bot to reply with the tool-call trace for a reply.
+TRACE_REACTION = "🔥"
+
+# Hard cap on per-user message-map entries. Once exceeded, the oldest entries
+# (already-expired tombstones first) are dropped entirely so memory stays
+# bounded even in long-lived chats.
+_MESSAGE_MAP_HARD_CAP = 1000
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -100,6 +119,9 @@ class _MessageMapEntry:
     citations: list[dict[str, str]]  # [{"id": "...", "claim": "..."}, ...]
     tool_calls: list[ToolCallTrace]
     created_at: float
+    expired: bool = False  # tombstone after TTL; lets reactions distinguish
+    # "no record at all" (entry is None — bot restart, untracked message)
+    # from "we did track this but the data has aged out" (expired=True).
 
 
 @dataclass
@@ -372,14 +394,40 @@ class TelegramChannel(BaseChannel):
         )
 
     async def _refresh_command_menu(self) -> None:
+        """(Re)publish the command menu, wiping stale per-scope lists first.
+
+        Telegram resolves the menu by scope hierarchy (chat → all-private →
+        default), and lists set under any scope persist across bot restarts
+        until explicitly cleared. If a previous bot version published commands
+        under a broader scope than we use now, those entries shadow the
+        current default-scope list and the user sees the old menu. Clear the
+        common scopes before re-setting so the active list always wins.
+        """
         if not self._app:
             return
+        bot = self._app.bot
+        scopes_to_clear = (
+            BotCommandScopeDefault(),
+            BotCommandScopeAllPrivateChats(),
+            BotCommandScopeAllGroupChats(),
+            BotCommandScopeAllChatAdministrators(),
+        )
         try:
-            await self._app.bot.set_my_commands(
+            for scope in scopes_to_clear:
+                try:
+                    await bot.delete_my_commands(scope=scope)
+                except Exception as e:
+                    logger.debug(f"deleteMyCommands({type(scope).__name__}) failed: {e}")
+            await bot.set_my_commands(
                 commands=list(_PUBLIC_COMMANDS), scope=BotCommandScopeDefault()
             )
             for admin_id in self.config.admin_user_ids or []:
-                await self._app.bot.set_my_commands(
+                # Clear then set so removed admin commands don't linger.
+                try:
+                    await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=admin_id))
+                except Exception as e:
+                    logger.debug(f"deleteMyCommands(chat={admin_id}) failed: {e}")
+                await bot.set_my_commands(
                     commands=list(_ADMIN_COMMANDS),
                     scope=BotCommandScopeChat(chat_id=admin_id),
                 )
@@ -415,6 +463,9 @@ class TelegramChannel(BaseChannel):
         msg = update.effective_message
         if not msg:
             return
+        # Republish the menu so users who saw the old command list from a
+        # previous deployment get the current one.
+        await self._refresh_command_menu()
         text = (
             "Welcome to the AI-in-Business class assistant.\n\n"
             "Try one of these to get started:\n"
@@ -434,8 +485,8 @@ class TelegramChannel(BaseChannel):
         text = (
             "I'm a small assistant for the AI-in-Business lecture.\n\n"
             "Commands: /auth, /personality, /cite, /reset, /forgetme, /sources, /scope.\n"
-            "React 👀 to one of my replies to see the source chunks; "
-            "react 🔍 to see the tool-call trace for that reply."
+            f"React {SOURCES_REACTION} to one of my replies to see the source chunks; "
+            f"react {TRACE_REACTION} to see the tool-call trace for that reply."
         )
         await msg.reply_text(text)
 
@@ -867,7 +918,9 @@ class TelegramChannel(BaseChannel):
             self._record_message_map(st, first_msg_id, citations, tool_calls)
             if citations and not st.seen_first_citation:
                 st.seen_first_citation = True
-                await self._safe_send_text(chat_id, "(react 👀 to any reply for sources)")
+                await self._safe_send_text(
+                    chat_id, f"(react {SOURCES_REACTION} to any reply for sources)"
+                )
 
     async def _send_html(self, chat_id: int, body: str) -> int | None:
         if not self._app:
@@ -950,11 +1003,20 @@ class TelegramChannel(BaseChannel):
             tool_calls=tool_calls,
             created_at=now,
         )
-        # Prune
+        # Tombstone entries past TTL (don't drop them) so the reaction handlers
+        # can distinguish "expired" from "never tracked".
         cutoff = now - ttl
-        stale = [mid for mid, entry in st.message_map.items() if entry.created_at < cutoff]
-        for mid in stale:
-            st.message_map.pop(mid, None)
+        for entry in st.message_map.values():
+            if not entry.expired and entry.created_at < cutoff:
+                entry.citations = []
+                entry.tool_calls = []
+                entry.expired = True
+        # Hard cap so memory stays bounded; drop oldest entries first
+        # (tombstones get evicted before live ones because they're older).
+        excess = len(st.message_map) - _MESSAGE_MAP_HARD_CAP
+        if excess > 0:
+            for mid, _ in sorted(st.message_map.items(), key=lambda kv: kv[1].created_at)[:excess]:
+                st.message_map.pop(mid, None)
 
     # ---- typing indicator -------------------------------------------------
 
@@ -1011,9 +1073,9 @@ class TelegramChannel(BaseChannel):
     async def _dispatch_reaction(
         self, emoji: str, message_id: int, st: _UserState, chat_id: int
     ) -> None:
-        if emoji == "👀":
+        if emoji == SOURCES_REACTION:
             await self._reaction_sources(message_id, st, chat_id)
-        elif emoji == "🔍":
+        elif emoji == TRACE_REACTION:
             await self._reaction_trace(message_id, st, chat_id)
         # 👍/👎/❓/🔁 reserved for future, no-op for now.
 
@@ -1022,6 +1084,16 @@ class TelegramChannel(BaseChannel):
         if not self._app:
             return
         if entry is None:
+            # Either we never tracked this message (untracked / bot restart)
+            # or the entry aged past the hard cap. Don't claim "expired" —
+            # we genuinely don't know if it ever existed.
+            await self._safe_send_text(
+                chat_id,
+                "I don't have a record of that message. It may be from a previous "
+                "session or a message I didn't send.",
+            )
+            return
+        if entry.expired:
             await self._safe_send_text(
                 chat_id,
                 "Sources for that reply have expired — ask again and I'll re-cite.",
@@ -1030,7 +1102,7 @@ class TelegramChannel(BaseChannel):
         if not entry.citations:
             await self._safe_send_text(
                 chat_id,
-                "No sources for that reply (retrieval not wired yet).",
+                "That reply didn't cite any sources.",
             )
             return
         lines = [
@@ -1044,7 +1116,7 @@ class TelegramChannel(BaseChannel):
             await self._app.bot.set_message_reaction(
                 chat_id=chat_id,
                 message_id=message_id,
-                reaction=[ReactionTypeEmoji("👀")],
+                reaction=[ReactionTypeEmoji(SOURCES_REACTION)],
             )
         except Exception as e:
             logger.debug(f"setMessageReaction failed: {e}")
@@ -1054,8 +1126,12 @@ class TelegramChannel(BaseChannel):
         if entry is None:
             await self._safe_send_text(
                 chat_id,
-                "Tool trace for that reply has expired.",
+                "I don't have a record of that message. It may be from a previous "
+                "session or a message I didn't send.",
             )
+            return
+        if entry.expired:
+            await self._safe_send_text(chat_id, "Tool trace for that reply has expired.")
             return
         if not entry.tool_calls:
             await self._safe_send_text(chat_id, "No tool calls for that reply.")

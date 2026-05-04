@@ -79,7 +79,7 @@ files on disk.
 - `message_id → {citations, raw_chunks, tool_calls}` map with a 24h
   TTL, so users can react to past replies and get the underlying
   sources or tool-call trace back. See reaction handler below.
-- `seen_first_citation` — whether the discoverability hint for the 👀
+- `seen_first_citation` — whether the discoverability hint for the ❤️
   reaction has been shown to this user this session.
 
 In-memory by default. Redis only if we need to survive bot restarts
@@ -97,7 +97,7 @@ Each model reply produces one Telegram message:
 2. An inline-keyboard row of up to 3 model-suggested follow-ups,
    generated in a separate cheap call.
 3. On the **first** cited reply of a session, append a one-line hint:
-   `(react 👀 to any reply for sources)`. Tracked per-user; never
+   `(react ❤️ to any reply for sources)`. Tracked per-user; never
    repeated within a session.
 
 There is no inline "Show sources" button. That flow is reaction-driven.
@@ -113,8 +113,8 @@ future affordances drop in without restructuring:
 
 | Emoji | Action                                                   |
 |-------|----------------------------------------------------------|
-| 👀    | Reply with the source chunks for that message, using the per-`message_id` map. Acknowledge by reacting back with 👀 via `setMessageReaction`. |
-| 🔍    | Reply with the tool-call trace for that message — structured list of `name(args) → short result summary`, no LLM narration. Same 24h TTL. Pedagogical for an AI-in-business class; cheap because no extra model call. |
+| ❤️    | Reply with the source chunks for that message, using the per-`message_id` map. Acknowledge by reacting back with ❤️ via `setMessageReaction`. |
+| 🔥    | Reply with the tool-call trace for that message — structured list of `name(args) → short result summary`, no LLM narration. Same 24h TTL. Pedagogical for an AI-in-business class; cheap because no extra model call. |
 | 👍/👎 | Future: feedback signal for transcript review. Stub now, no behaviour. |
 | ❓    | Future: "explain more" — re-prompt with the prior reply as context. |
 | 🔁    | Future: regenerate with a different sample.              |

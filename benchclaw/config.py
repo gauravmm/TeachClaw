@@ -63,13 +63,6 @@ class ProviderConfig(BaseModel):
     extra_headers: dict[str, str] | None = None
 
 
-class GatewayConfig(BaseModel):
-    """Gateway/server configuration."""
-
-    host: str = "0.0.0.0"
-    port: int = 18790
-
-
 class ToolsConfig(BaseModel):
     """Static built-in tool configuration.
 
@@ -103,7 +96,6 @@ class Config(BaseSettings):
 
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
-    gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     channels: ChannelConfigs = Field(default_factory=ChannelConfigs)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)

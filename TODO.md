@@ -88,8 +88,8 @@ Canonical design in **`spec/TELEGRAM.md`**.
       limited (5 fails / 10 min, then 1 h lockout).
 - [x] DM-only enforcement: group chats get a one-line "DM-only" reply.
 - [x] Reaction dispatcher reads `message_reaction` updates and dispatches
-      via a generic emoji table. 👀 surfaces citations from the
-      per-`message_id` map (24 h TTL); 🔍 dumps the tool-call trace.
+      via a generic emoji table. ❤️ surfaces citations from the
+      per-`message_id` map (24 h TTL); 🔥 dumps the tool-call trace.
       Citation tags are stripped from the displayed text in
       `_strip_citations` and stored alongside tool calls in the map.
 - [x] Mermaid post-processor: `benchclaw.rendering.mermaid` extracts
@@ -103,7 +103,7 @@ Canonical design in **`spec/TELEGRAM.md`**.
       thinking…" until the typing indicator drops.
 - [x] Tool-call trace plumbed through `OutboundMessage.metadata.tool_calls`
       from the agent loop; the channel records it on the per-`message_id`
-      map so the 🔍 reaction can replay it.
+      map so the 🔥 reaction can replay it.
 - [x] `SessionControlEvent("reset"|"forget")` lets the channel ask the
       agent loop to clear the in-memory session and (for `forget`) delete
       the user's storage directory.

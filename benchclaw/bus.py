@@ -90,7 +90,7 @@ class ToolCallTrace:
     """One dispatched tool call, optionally with its captured result.
 
     Channels record these via ``OutboundMessage.metadata['tool_calls']`` so a
-    🔍 reaction can replay what the agent actually did for that turn.
+    🔥 reaction can replay what the agent actually did for that turn.
     """
 
     id: str
