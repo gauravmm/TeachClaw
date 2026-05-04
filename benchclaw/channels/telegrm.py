@@ -21,8 +21,6 @@ Implements spec/TELEGRAM.md and integrates with spec/AUTH.md. Highlights:
 from __future__ import annotations
 
 import asyncio
-import html
-import json
 import re
 import time
 from collections import deque
@@ -54,6 +52,7 @@ from telegram.ext import (
 from telegram.request import HTTPXRequest
 
 from benchclaw import auth as auth_module
+from benchclaw import citations as cit
 from benchclaw import personalities
 from benchclaw import storage as storage_layout
 from benchclaw.bus import (
@@ -136,20 +135,6 @@ class TelegramConfig(ChannelConfig):
 
 
 @dataclass
-class _MessageMapEntry:
-    citations: list[dict[str, str]]  # [{"id": "...", "claim": "..."}, ...]
-    tool_calls: list[ToolCallTrace]
-    created_at: float
-    expired: bool = False  # tombstone after TTL; lets reactions distinguish
-    # "no record at all" (entry is None — bot restart, untracked message)
-    # from "we did track this but the data has aged out" (expired=True).
-    # kb_records: id → {title, source, section_path, corpus, snippet, ...}
-    # extracted from any kb__ tool result that fed this reply, so the ❤
-    # reaction can render clickable source links instead of bare ids.
-    kb_records: dict[str, dict] = field(default_factory=dict)
-
-
-@dataclass
 class _UserState:
     chat_id: int
     cite: bool = True
@@ -158,153 +143,12 @@ class _UserState:
     rate_window: deque[float] = field(default_factory=deque)
     rate_blocked_warned: bool = False
     last_user_message_id: int | None = None
-    message_map: dict[int, _MessageMapEntry] = field(default_factory=dict)
+    cite_store: cit.CitationStore[int] = field(default_factory=cit.CitationStore[int])
 
 
 # ---------------------------------------------------------------------------
 # Markdown → Telegram HTML
 # ---------------------------------------------------------------------------
-
-
-# MCP tool-name prefix for the knowledge base. Trace entries from tools whose
-# name starts with this carry JSON kb records that we extract for the
-# citation listing. Mirrors `_CITATION_TOOL_PREFIXES` on the agent loop.
-_KB_TOOL_PREFIX = "kb__"
-
-
-def _extract_kb_records(tool_calls: list[ToolCallTrace]) -> dict[str, dict]:
-    """Pull `{id, title, source, section_path, ...}` records out of any
-    kb tool result strings. The kb tool returns one or more JSON objects
-    concatenated (not a JSON array); we walk the text with a JSONDecoder
-    and collect every dict that has an `id` field. Best-effort: malformed
-    fragments are skipped silently."""
-    records: dict[str, dict] = {}
-    decoder = json.JSONDecoder()
-    for tc in tool_calls:
-        if not tc.name.startswith(_KB_TOOL_PREFIX) or not tc.result:
-            continue
-        text = tc.result.lstrip()
-        while text:
-            try:
-                obj, end = decoder.raw_decode(text)
-            except json.JSONDecodeError:
-                break
-            if isinstance(obj, dict) and isinstance(obj.get("id"), str):
-                records[obj["id"]] = obj
-            text = text[end:].lstrip()
-    return records
-
-
-def _render_citation_list(citations: list[dict], kb_records: dict[str, dict]) -> str:
-    """Render the source list emitted on a SOURCES_REACTION reaction.
-
-    For each citation, emit one heading line plus one indented bullet per
-    claim phrasing the model used (deduped by exact match in ``_ref``):
-
-      [N] <a href="SOURCE_URL">title — section_path</a>
-          • first claim text
-          • second claim text
-
-    When a kb_record is missing for the cited id (model cited an id we
-    didn't see this turn, or the source URL is blank), fall back to a bare
-    `<code>id</code>` heading. Only the URL escapes need careful handling
-    since it goes inside an href; everything else gets html.escape.
-    """
-    lines: list[str] = []
-    for i, c in enumerate(citations, start=1):
-        cid = c.get("id", "?")
-        claims = [str(s).strip() for s in c.get("claims") or [] if str(s).strip()]
-        record = kb_records.get(cid) or {}
-        title = (record.get("title") or "").strip()
-        section_path = (record.get("section_path") or "").strip()
-        source = (record.get("source") or "").strip()
-
-        label_parts = [p for p in (title, section_path) if p]
-        label = " — ".join(label_parts) if label_parts else cid
-        label_html = html.escape(label)
-
-        if source:
-            head = f'[{i}] <a href="{html.escape(source, quote=True)}">{label_html}</a>'
-        else:
-            head = f"[{i}] <code>{html.escape(cid)}</code>"
-        if len(claims) == 1:
-            head += f"\n    {html.escape(claims[0][:240])}"
-        elif claims:
-            for claim in claims:
-                head += f"\n    • {html.escape(claim[:240])}"
-        lines.append(head)
-    return "\n".join(lines)
-
-
-_CITATION_RE = re.compile(r"<citation\s+id=\"([^\"]+)\">(.*?)</citation>", re.DOTALL)
-# Bare-tag fallback: small models often emit `<citation id="X">` as a
-# footnote marker at the end of a sentence with no closing tag. We accept
-# both the self-closing variant `<citation id="X"/>` and the open-only form.
-_CITATION_BARE_RE = re.compile(r"<citation\s+id=\"([^\"]+)\"\s*/?>", re.IGNORECASE)
-_LIST_BULLET_RE = re.compile(r"^\s*[-*•]\s*")
-
-
-def _strip_citations(text: str) -> tuple[str, list[dict]]:
-    """Pull `<citation>` markers out of model text and inject `[N]` refs.
-
-    Two recognized forms, in order:
-      * `<citation id="X">claim</citation>` — wrapped, claim is the inner text.
-      * `<citation id="X">` with no closing tag — treated as a footnote
-        marker; the claim is the preceding sentence in the text up to the
-        tag (back to the last `.`/`!`/`?` or newline).
-
-    In both cases the marker is replaced in the displayed text by a `[N]`
-    reference number that matches the position of the citation in the
-    returned list. Repeat citations of the same `id` reuse the same number;
-    each of their claim phrasings is appended to that entry's `claims`
-    list so the SOURCES_REACTION listing can show every place the source
-    was used.
-
-    Returned shape: ``[{"id": str, "claims": [str, ...]}, ...]``.
-    """
-    citations: list[dict] = []
-    id_to_index: dict[str, int] = {}
-
-    def _ref(citation_id: str, claim: str) -> str:
-        existing = id_to_index.get(citation_id)
-        if existing is not None:
-            entry = citations[existing - 1]
-            if claim and claim not in entry["claims"]:
-                entry["claims"].append(claim)
-            return f"[{existing}]"
-        idx = len(citations) + 1
-        id_to_index[citation_id] = idx
-        citations.append({"id": citation_id, "claims": [claim] if claim else []})
-        return f"[{idx}]"
-
-    def _wrapped(m: re.Match) -> str:
-        ref = _ref(m.group(1), m.group(2).strip())
-        return f"{m.group(2)} {ref}"
-
-    text = _CITATION_RE.sub(_wrapped, text)
-
-    # Iteratively handle the bare form. We rebuild the text each iteration
-    # so the recovered claim reflects the already-cleaned prose around it.
-    while True:
-        m = _CITATION_BARE_RE.search(text)
-        if m is None:
-            break
-        prefix = text[: m.start()]
-        boundary = max(
-            prefix.rfind("."),
-            prefix.rfind("!"),
-            prefix.rfind("?"),
-            prefix.rfind("\n"),
-        )
-        claim = prefix[boundary + 1 :] if boundary >= 0 else prefix
-        claim = _LIST_BULLET_RE.sub("", claim).strip()
-        ref = _ref(m.group(1), claim[:300])
-        leading = "" if m.start() > 0 and text[m.start() - 1].isspace() else " "
-        text = text[: m.start()] + f"{leading}{ref}" + text[m.end() :]
-
-    # Trim the space the bare tag often leaves orphaned before punctuation.
-    text = re.sub(r" +([.,;:!?])", r"\1", text)
-    return text, citations
 
 
 def _markdown_to_telegram_html(text: str) -> str:
@@ -430,7 +274,13 @@ class TelegramChannel(BaseChannel):
         key = str(chat_id)
         st = self._users.get(key)
         if st is None:
-            st = _UserState(chat_id=chat_id)
+            st = _UserState(
+                chat_id=chat_id,
+                cite_store=cit.CitationStore[int](
+                    ttl_seconds=self.config.message_map_ttl_seconds,
+                    hard_cap=_MESSAGE_MAP_HARD_CAP,
+                ),
+            )
             self._users[key] = st
         return st
 
@@ -770,7 +620,7 @@ class TelegramChannel(BaseChannel):
         addr = self._addr(chat.id)
         await self.bus.publish_inbound(addr, SessionControlEvent(action="reset"))
         st = self._user_state(chat.id)
-        st.message_map.clear()
+        st.cite_store.clear()
         st.seen_first_citation = False
         await msg.reply_text("Conversation cleared.")
 
@@ -784,7 +634,7 @@ class TelegramChannel(BaseChannel):
         addr = self._addr(chat.id)
         await self.bus.publish_inbound(addr, SessionControlEvent(action="forget"))
         st = self._user_state(chat.id)
-        st.message_map.clear()
+        st.cite_store.clear()
         st.seen_first_citation = False
         await msg.reply_text(
             "Your storage has been deleted. Re-authenticate with /auth <code> to continue."
@@ -1009,7 +859,7 @@ class TelegramChannel(BaseChannel):
             return
 
         st = self._user_state(chat_id)
-        text, citations = _strip_citations(msg.content)
+        text, citations = cit.strip_citations(msg.content)
         raw_tool_calls = msg.metadata.get("tool_calls") if msg.metadata else None
         tool_calls: list[ToolCallTrace] = list(raw_tool_calls or [])
 
@@ -1025,7 +875,7 @@ class TelegramChannel(BaseChannel):
         chat_id: int,
         st: _UserState,
         text: str,
-        citations: list[dict[str, str]],
+        citations: list[cit.Citation],
         tool_calls: list[ToolCallTrace],
     ) -> None:
         blocks = mermaid_renderer.extract_blocks(text)
@@ -1075,7 +925,7 @@ class TelegramChannel(BaseChannel):
                     first_msg_id = sent
 
         if first_msg_id is not None:
-            self._record_message_map(st, first_msg_id, citations, tool_calls)
+            st.cite_store.record(first_msg_id, citations=citations, tool_calls=tool_calls)
             if citations and not st.seen_first_citation:
                 st.seen_first_citation = True
                 await self._safe_send_text(
@@ -1119,7 +969,7 @@ class TelegramChannel(BaseChannel):
         text: str,
         chat_id: int,
         st: _UserState,
-        citations: list[dict[str, str]],
+        citations: list[cit.Citation],
         tool_calls: list[ToolCallTrace],
     ) -> None:
         assert self._app
@@ -1151,41 +1001,9 @@ class TelegramChannel(BaseChannel):
                     sent = await self._app.bot.send_audio(audio=fh, **send_kwargs)
                 else:
                     sent = await self._app.bot.send_document(document=fh, **send_kwargs)
-            self._record_message_map(st, sent.message_id, citations, tool_calls)
+            st.cite_store.record(sent.message_id, citations=citations, tool_calls=tool_calls)
         except Exception as e:
             logger.error(f"Error sending Telegram media: {e}")
-
-    def _record_message_map(
-        self,
-        st: _UserState,
-        message_id: int,
-        citations: list[dict[str, str]],
-        tool_calls: list[ToolCallTrace],
-    ) -> None:
-        now = time.time()
-        ttl = self.config.message_map_ttl_seconds
-        kb_records = _extract_kb_records(tool_calls)
-        st.message_map[message_id] = _MessageMapEntry(
-            citations=citations,
-            tool_calls=tool_calls,
-            created_at=now,
-            kb_records=kb_records,
-        )
-        # Tombstone entries past TTL (don't drop them) so the reaction handlers
-        # can distinguish "expired" from "never tracked".
-        cutoff = now - ttl
-        for entry in st.message_map.values():
-            if not entry.expired and entry.created_at < cutoff:
-                entry.citations = []
-                entry.tool_calls = []
-                entry.kb_records = {}
-                entry.expired = True
-        # Hard cap so memory stays bounded; drop oldest entries first
-        # (tombstones get evicted before live ones because they're older).
-        excess = len(st.message_map) - _MESSAGE_MAP_HARD_CAP
-        if excess > 0:
-            for mid, _ in sorted(st.message_map.items(), key=lambda kv: kv[1].created_at)[:excess]:
-                st.message_map.pop(mid, None)
 
     # ---- typing indicator -------------------------------------------------
 
@@ -1250,7 +1068,7 @@ class TelegramChannel(BaseChannel):
         # 👍/👎/❓/🔁 reserved for future, no-op for now.
 
     async def _reaction_sources(self, message_id: int, st: _UserState, chat_id: int) -> None:
-        entry = st.message_map.get(message_id)
+        entry = st.cite_store.lookup(message_id)
         if not self._app:
             return
         # All replies are threaded onto the original bot message the user
@@ -1282,7 +1100,9 @@ class TelegramChannel(BaseChannel):
                 reply_to_message_id=message_id,
             )
             return
-        rendered = _render_citation_list(entry.citations[:5], entry.kb_records)
+        rendered = cit.render_list(
+            entry.citations[:5], entry.kb_records, fmt=cit.RenderFormat.TELEGRAM_HTML
+        )
         await self._safe_send_text(
             chat_id,
             rendered,
@@ -1301,7 +1121,7 @@ class TelegramChannel(BaseChannel):
             logger.debug(f"setMessageReaction failed: {e}")
 
     async def _reaction_trace(self, message_id: int, st: _UserState, chat_id: int) -> None:
-        entry = st.message_map.get(message_id)
+        entry = st.cite_store.lookup(message_id)
         if entry is None:
             await self._safe_send_text(
                 chat_id,
