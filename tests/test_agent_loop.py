@@ -249,7 +249,9 @@ def test_collapse_user_messages_returns_one_user_event() -> None:
 
 
 @pytest.mark.asyncio
-async def test_proactive_compaction_summarizes_when_estimate_exceeds_threshold(tmp_path: Path) -> None:
+async def test_proactive_compaction_summarizes_when_estimate_exceeds_threshold(
+    tmp_path: Path,
+) -> None:
     config = Config()
     config.agents.master.workspace = str(tmp_path)
     config.agents.master.context_window = 200

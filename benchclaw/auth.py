@@ -18,10 +18,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from benchclaw.bus import MessageAddress
 from benchclaw import storage as storage_layout
+from benchclaw.bus import MessageAddress
 from benchclaw.utils import now_aware
-
 
 SECRET_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 SECRET_LENGTH = 6
@@ -67,7 +66,7 @@ def read_secret(workspace: Path) -> SecretRecord | None:
             code=str(data["code"]),
             set_at=datetime.fromisoformat(data["set_at"]),
         )
-    except (OSError, ValueError, KeyError):
+    except OSError, ValueError, KeyError:
         return None
 
 
@@ -93,7 +92,7 @@ def read_marker(workspace: Path, addr: MessageAddress) -> str | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return str(data.get("code") or "")
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
 
 

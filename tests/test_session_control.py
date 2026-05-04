@@ -8,7 +8,6 @@ import pytest
 from benchclaw import personalities
 from benchclaw import storage as storage_layout
 from benchclaw.agent.loop import AgentLoop, ToolCallTracker, _AddressState
-from benchclaw.agent.tools.base import ToolContext
 from benchclaw.bus import (
     MessageAddress,
     MessageBus,

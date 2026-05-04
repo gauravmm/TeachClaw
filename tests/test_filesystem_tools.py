@@ -12,6 +12,7 @@ from benchclaw.agent.tools.filesystem import (
     GrepTool,
     ReadFileTool,
     WriteFileTool,
+    _resolve_path,
 )
 
 
@@ -119,11 +120,6 @@ async def test_edit_existing_file_succeeds_after_read_and_refreshes_snapshot(
     )
 
     assert second_result == "Successfully edited notes.txt"
-
-
-import pytest
-from benchclaw.agent.tools.filesystem import _resolve_path
-from benchclaw.agent.tools.base import ToolContext
 
 
 def _sandboxed_ctx(tmp_path):

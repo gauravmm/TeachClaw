@@ -28,8 +28,7 @@ from benchclaw.channels.whatsapp.bridge import (
     BridgeSentEvent,
     BridgeStatusEvent,
 )
-from benchclaw.media import extension_for_mime
-from benchclaw.media import MediaRepository
+from benchclaw.media import MediaRepository, extension_for_mime
 from benchclaw.utils import now_aware, parse_optional_timestamp
 
 

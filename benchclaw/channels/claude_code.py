@@ -32,7 +32,6 @@ from mcp.server.session import ServerSession
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.shared.session import SessionMessage
 from mcp.types import JSONRPCMessage, JSONRPCNotification
-from pydantic import BaseModel
 from starlette.applications import Starlette
 from starlette.routing import Route
 

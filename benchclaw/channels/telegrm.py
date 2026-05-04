@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-import shutil
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -63,7 +62,6 @@ from benchclaw.bus import (
 from benchclaw.channels.base import BaseChannel, ChannelConfig
 from benchclaw.media import MediaRepository, extension_for_mime
 from benchclaw.rendering import mermaid as mermaid_renderer
-
 
 # ---------------------------------------------------------------------------
 # Config
@@ -311,9 +309,7 @@ class TelegramChannel(BaseChannel):
         for name, handler in cmds.items():
             self._app.add_handler(CommandHandler(name, handler))
 
-        self._app.add_handler(
-            CallbackQueryHandler(self._on_callback_query, pattern=r"^p:")
-        )
+        self._app.add_handler(CallbackQueryHandler(self._on_callback_query, pattern=r"^p:"))
 
         self._app.add_handler(
             MessageHandler(
@@ -370,8 +366,7 @@ class TelegramChannel(BaseChannel):
             return
         record = auth_module.write_secret(self.workspace, auth_module.generate_code())
         logger.warning(
-            "No auth secret on disk; generated a fresh code: {} "
-            "(rotate with /setsecret).",
+            "No auth secret on disk; generated a fresh code: {} (rotate with /setsecret).",
             record.code,
         )
 
@@ -464,16 +459,12 @@ class TelegramChannel(BaseChannel):
         provided = auth_module.normalize_code(parts[1])
         secret = auth_module.read_secret(self.workspace)
         if secret is None:
-            await msg.reply_text(
-                "Auth is not configured yet — ask the prof to run /setsecret."
-            )
+            await msg.reply_text("Auth is not configured yet — ask the prof to run /setsecret.")
             return
         if provided != secret.code:
             failures, locked = self._auth_limiter.record_failure(user_key)
             if locked:
-                await msg.reply_text(
-                    "Too many wrong codes. Locked out for the next hour."
-                )
+                await msg.reply_text("Too many wrong codes. Locked out for the next hour.")
             else:
                 await msg.reply_text(
                     f"Wrong code. ({failures}/{auth_module.RATE_LIMIT_FAILURES} tries in this window.)"
@@ -579,18 +570,14 @@ class TelegramChannel(BaseChannel):
             return
         msg = update.effective_message
         if msg:
-            await msg.reply_text(
-                "No corpus is wired up yet. Retrieval lands in a later iteration."
-            )
+            await msg.reply_text("No corpus is wired up yet. Retrieval lands in a later iteration.")
 
     async def _cmd_scope(self, update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._gate(update):
             return
         msg = update.effective_message
         if msg:
-            await msg.reply_text(
-                "No corpus to scope yet. Retrieval lands in a later iteration."
-            )
+            await msg.reply_text("No corpus to scope yet. Retrieval lands in a later iteration.")
 
     async def _cmd_setsecret(self, update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         msg = update.effective_message
@@ -829,7 +816,12 @@ class TelegramChannel(BaseChannel):
                 segments.append(("text", text[cursor:]))
             for extra in blocks[2:]:
                 segments.append(
-                    ("text", "\n_couldn't render this diagram, source below_\n```\n" + extra.source + "\n```\n")
+                    (
+                        "text",
+                        "\n_couldn't render this diagram, source below_\n```\n"
+                        + extra.source
+                        + "\n```\n",
+                    )
                 )
 
         first_msg_id: int | None = None
@@ -860,9 +852,7 @@ class TelegramChannel(BaseChannel):
             return None
         html = _markdown_to_telegram_html(body)
         try:
-            sent = await self._app.bot.send_message(
-                chat_id=chat_id, text=html, parse_mode="HTML"
-            )
+            sent = await self._app.bot.send_message(chat_id=chat_id, text=html, parse_mode="HTML")
             return sent.message_id
         except Exception as e:
             logger.warning(f"HTML parse failed, falling back to plain text: {e}")
@@ -885,11 +875,7 @@ class TelegramChannel(BaseChannel):
                 return sent.message_id
             except Exception as e:
                 logger.warning(f"Failed to send mermaid PNG, falling back to source: {e}")
-        body = (
-            "_couldn't render this diagram, source below_\n```\n"
-            + rendered.source
-            + "\n```"
-        )
+        body = "_couldn't render this diagram, source below_\n```\n" + rendered.source + "\n```"
         return await self._send_html(chat_id, body)
 
     async def _send_media_message(

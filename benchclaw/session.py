@@ -352,9 +352,7 @@ class Session:
         current question stays verbatim and attached media still resolves.
         """
         kept: list[ConversationEvent] = (
-            list(self.events[keep_from_index:])
-            if 0 <= keep_from_index < len(self.events)
-            else []
+            list(self.events[keep_from_index:]) if 0 <= keep_from_index < len(self.events) else []
         )
         self.events = [SummaryEvent(content=summary), *kept]
         self.updated_at = now_aware()

@@ -17,7 +17,6 @@ from benchclaw.channels.smtp_email import EmailConfig
 from benchclaw.channels.telegrm import TelegramConfig
 from benchclaw.channels.whatsapp.channel import WhatsAppConfig
 
-
 _DEFAULT_ELIDE_TOOLS: tuple[str, ...] = (
     "search",
     "fetch_doc",

@@ -144,10 +144,7 @@ class InboundMessageBatch:
 
     def __bool__(self) -> bool:
         return bool(
-            self.tool_results
-            or self.system_events
-            or self.user_messages
-            or self.control_events
+            self.tool_results or self.system_events or self.user_messages or self.control_events
         )
 
 

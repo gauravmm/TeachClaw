@@ -267,7 +267,9 @@ class GlobTool(Tool):
             default=".",
             description="The directory to search from, where . is the workspace dir.",
         )
-        max_results: int = Field(default=200, ge=1, description="Maximum number of matches to return")
+        max_results: int = Field(
+            default=200, ge=1, description="Maximum number of matches to return"
+        )
 
     Params: ClassVar[type[BaseModel]] = Params
 

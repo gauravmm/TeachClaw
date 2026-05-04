@@ -57,8 +57,22 @@ async def test_search_media_returns_only_caller_records(tmp_path: Path):
     repo = MediaRepository(tmp_path)
     alice = MessageAddress("telegram", "chat-1")
     bob = MessageAddress("telegram", "chat-2")
-    p_alice = repo.register(alice, sender_id="alice", media_type="image", ext=".png", mime_type="image/png", timestamp=datetime(2026, 3, 10, 14, 23, 0))
-    p_bob = repo.register(bob, sender_id="bob", media_type="image", ext=".png", mime_type="image/png", timestamp=datetime(2026, 3, 10, 14, 24, 0))
+    p_alice = repo.register(
+        alice,
+        sender_id="alice",
+        media_type="image",
+        ext=".png",
+        mime_type="image/png",
+        timestamp=datetime(2026, 3, 10, 14, 23, 0),
+    )
+    p_bob = repo.register(
+        bob,
+        sender_id="bob",
+        media_type="image",
+        ext=".png",
+        mime_type="image/png",
+        timestamp=datetime(2026, 3, 10, 14, 24, 0),
+    )
     _write_png(p_alice)
     _write_png(p_bob)
     repo.set_caption(alice, repo.model_relpath(p_alice), "alice receipt")
@@ -75,8 +89,22 @@ async def test_search_media_returns_only_caller_records(tmp_path: Path):
 async def test_search_media_filters_by_media_type(tmp_path: Path):
     repo = MediaRepository(tmp_path)
     addr = MessageAddress("telegram", "chat-1")
-    img_path = repo.register(addr, sender_id="alice", media_type="image", ext=".png", mime_type="image/png", timestamp=datetime(2026, 3, 10, 14, 23, 0))
-    audio_path = repo.register(addr, sender_id="alice", media_type="audio", ext=".ogg", mime_type="audio/ogg", timestamp=datetime(2026, 3, 10, 14, 24, 0))
+    img_path = repo.register(
+        addr,
+        sender_id="alice",
+        media_type="image",
+        ext=".png",
+        mime_type="image/png",
+        timestamp=datetime(2026, 3, 10, 14, 23, 0),
+    )
+    audio_path = repo.register(
+        addr,
+        sender_id="alice",
+        media_type="audio",
+        ext=".ogg",
+        mime_type="audio/ogg",
+        timestamp=datetime(2026, 3, 10, 14, 24, 0),
+    )
     _write_png(img_path)
     audio_path.write_bytes(b"fake ogg")
     repo.set_caption(addr, repo.model_relpath(img_path), "a photo")

@@ -11,8 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from benchclaw.bus import MessageAddress
 from benchclaw import storage as storage_layout
+from benchclaw.bus import MessageAddress
 
 
 @dataclass(frozen=True)

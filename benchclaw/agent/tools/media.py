@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -85,18 +84,14 @@ class SendMediaTool(Tool):
             "rather than also saying in plain text that you sent it."
         )
 
-    async def execute(
-        self, ctx: ToolContext, path: str, caption: str = "", **_: Any
-    ) -> str:
+    async def execute(self, ctx: ToolContext, path: str, caption: str = "", **_: Any) -> str:
         if not ctx.bus:
             raise RuntimeError("send_media requires message bus access")
         if not ctx.media_repo:
             raise RuntimeError("send_media requires media repository access")
         addr = _require_address(ctx)
         ctx.media_repo.resolve_file(addr, path)  # validates path exists
-        await ctx.bus.publish_outbound(
-            OutboundMessage(address=addr, content=caption, media=[path])
-        )
+        await ctx.bus.publish_outbound(OutboundMessage(address=addr, content=caption, media=[path]))
         return f"Media sent to {addr}"
 
 

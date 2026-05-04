@@ -62,23 +62,27 @@ def build_system_prompt(
     ]
     skills = SkillsLoader(workspace).get_all_skills()
     system = platform.system()
-    return _env().get_template("system_prompt.j2").render(
-        runtime=(
-            f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, "
-            f"Python {platform.python_version()}"
-        ),
-        workspace_path=str(workspace.expanduser().resolve()),
-        bootstrap_files=bootstrap_files,
-        skills=skills,
-        tools=[
-            {"name": t.name, "description": t.description, "parameters": t.parameters}
-            for t in (tools or [])
-        ],
-        channel=channel,
-        chat_id=chat_id,
-        session_label=session_label,
-        chunk_elision_active=chunk_elision_active,
-        profile_text=(profile_text or "").strip() or None,
-        storage_path=storage_path,
-        personality_overlay=(personality_overlay or "").strip() or None,
+    return (
+        _env()
+        .get_template("system_prompt.j2")
+        .render(
+            runtime=(
+                f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, "
+                f"Python {platform.python_version()}"
+            ),
+            workspace_path=str(workspace.expanduser().resolve()),
+            bootstrap_files=bootstrap_files,
+            skills=skills,
+            tools=[
+                {"name": t.name, "description": t.description, "parameters": t.parameters}
+                for t in (tools or [])
+            ],
+            channel=channel,
+            chat_id=chat_id,
+            session_label=session_label,
+            chunk_elision_active=chunk_elision_active,
+            profile_text=(profile_text or "").strip() or None,
+            storage_path=storage_path,
+            personality_overlay=(personality_overlay or "").strip() or None,
+        )
     )

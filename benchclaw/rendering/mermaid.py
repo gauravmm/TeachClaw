@@ -26,7 +26,6 @@ from typing import Literal
 
 from loguru import logger
 
-
 _FENCE_RE = re.compile(r"```mermaid\s*\n(.*?)```", re.DOTALL)
 _DEFAULT_TIMEOUT = 5.0
 _MAX_DIAGRAMS = 2

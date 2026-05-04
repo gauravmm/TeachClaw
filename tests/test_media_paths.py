@@ -51,8 +51,12 @@ def test_register_serial_increments_within_same_second(tmp_path: Path):
     addr = _addr("telegram", "123456")
     ts = datetime(2026, 3, 10, 14, 23, 5)
 
-    p1 = repo.register(addr, sender_id="x", media_type="image", ext=".jpg", mime_type="image/jpeg", timestamp=ts)
-    p2 = repo.register(addr, sender_id="x", media_type="image", ext=".jpg", mime_type="image/jpeg", timestamp=ts)
+    p1 = repo.register(
+        addr, sender_id="x", media_type="image", ext=".jpg", mime_type="image/jpeg", timestamp=ts
+    )
+    p2 = repo.register(
+        addr, sender_id="x", media_type="image", ext=".jpg", mime_type="image/jpeg", timestamp=ts
+    )
 
     assert p1.name == "20260310T142305-01.jpg"
     assert p2.name == "20260310T142305-02.jpg"
@@ -62,8 +66,22 @@ def test_register_different_users_isolated(tmp_path: Path):
     repo = MediaRepository(tmp_path)
     ts = datetime(2026, 3, 10, 14, 23, 0)
 
-    p_alice = repo.register(_addr("telegram", "alice"), sender_id="alice", media_type="image", ext=".jpg", mime_type="image/jpeg", timestamp=ts)
-    p_bob = repo.register(_addr("telegram", "bob"), sender_id="bob", media_type="image", ext=".jpg", mime_type="image/jpeg", timestamp=ts)
+    p_alice = repo.register(
+        _addr("telegram", "alice"),
+        sender_id="alice",
+        media_type="image",
+        ext=".jpg",
+        mime_type="image/jpeg",
+        timestamp=ts,
+    )
+    p_bob = repo.register(
+        _addr("telegram", "bob"),
+        sender_id="bob",
+        media_type="image",
+        ext=".jpg",
+        mime_type="image/jpeg",
+        timestamp=ts,
+    )
 
     assert p_alice.parent == _user_media_dir(tmp_path, _addr("telegram", "alice"))
     assert p_bob.parent == _user_media_dir(tmp_path, _addr("telegram", "bob"))
@@ -73,7 +91,14 @@ def test_register_different_users_isolated(tmp_path: Path):
 def test_resolve_file_returns_absolute_path_and_mime(tmp_path: Path):
     repo = MediaRepository(tmp_path)
     addr = _addr("telegram", "123456")
-    path = repo.register(addr, sender_id="x", media_type="image", ext=".jpg", mime_type="image/jpeg", timestamp=datetime(2026, 3, 10, 14, 23, 0))
+    path = repo.register(
+        addr,
+        sender_id="x",
+        media_type="image",
+        ext=".jpg",
+        mime_type="image/jpeg",
+        timestamp=datetime(2026, 3, 10, 14, 23, 0),
+    )
     path.write_bytes(b"jpeg-bytes")
 
     resolved, mime = repo.resolve_file(addr, repo.model_relpath(path))
@@ -96,7 +121,14 @@ def test_resolve_file_rejects_non_media_paths(tmp_path: Path):
 def test_set_caption_updates_user_metadata(tmp_path: Path):
     repo = MediaRepository(tmp_path)
     addr = _addr("whatsapp", "555")
-    path = repo.register(addr, sender_id="555", media_type="image", ext=".jpg", mime_type="image/jpeg", timestamp=datetime(2026, 3, 10, 14, 23, 0))
+    path = repo.register(
+        addr,
+        sender_id="555",
+        media_type="image",
+        ext=".jpg",
+        mime_type="image/jpeg",
+        timestamp=datetime(2026, 3, 10, 14, 23, 0),
+    )
     path.write_bytes(b"jpeg-bytes")
     rel = repo.model_relpath(path)
 
@@ -109,7 +141,14 @@ def test_set_caption_updates_user_metadata(tmp_path: Path):
 def test_image_block_returns_provider_payload(tmp_path: Path):
     repo = MediaRepository(tmp_path)
     addr = _addr("telegram", "1")
-    path = repo.register(addr, sender_id="1", media_type="image", ext=".png", mime_type="image/png", timestamp=datetime(2026, 3, 10, 14, 23, 0))
+    path = repo.register(
+        addr,
+        sender_id="1",
+        media_type="image",
+        ext=".png",
+        mime_type="image/png",
+        timestamp=datetime(2026, 3, 10, 14, 23, 0),
+    )
     path.write_bytes(PNG_1X1)
 
     block = repo.image_block(addr, repo.model_relpath(path))
@@ -123,7 +162,14 @@ def test_image_block_returns_provider_payload(tmp_path: Path):
 def test_build_media_blocks_skips_missing_files(tmp_path: Path):
     repo = MediaRepository(tmp_path)
     addr = _addr("telegram", "1")
-    path = repo.register(addr, sender_id="1", media_type="image", ext=".png", mime_type="image/png", timestamp=datetime(2026, 3, 10, 14, 23, 0))
+    path = repo.register(
+        addr,
+        sender_id="1",
+        media_type="image",
+        ext=".png",
+        mime_type="image/png",
+        timestamp=datetime(2026, 3, 10, 14, 23, 0),
+    )
     path.write_bytes(PNG_1X1)
     rel = repo.model_relpath(path)
 
@@ -138,11 +184,15 @@ def test_serial_rebuilt_after_reload(tmp_path: Path):
     addr = _addr("whatsapp", "555")
     ts = datetime(2026, 3, 10, 14, 23, 0)
 
-    p1 = repo.register(addr, sender_id="555", media_type="image", ext=".jpg", mime_type="image/jpeg", timestamp=ts)
+    p1 = repo.register(
+        addr, sender_id="555", media_type="image", ext=".jpg", mime_type="image/jpeg", timestamp=ts
+    )
     p1.touch()
 
     repo2 = MediaRepository(tmp_path)
-    p2 = repo2.register(addr, sender_id="555", media_type="image", ext=".jpg", mime_type="image/jpeg", timestamp=ts)
+    p2 = repo2.register(
+        addr, sender_id="555", media_type="image", ext=".jpg", mime_type="image/jpeg", timestamp=ts
+    )
 
     assert p1.name == "20260310T142300-01.jpg"
     assert p2.name == "20260310T142300-02.jpg"
@@ -154,8 +204,24 @@ def test_search_only_returns_caller_user_records(tmp_path: Path):
     bob = _addr("telegram", "bob")
     ts = datetime(2026, 3, 10, 14, 23, 0)
 
-    p_alice = repo.register(alice, sender_id="alice", media_type="image", ext=".jpg", mime_type="image/jpeg", timestamp=ts, original_name="receipt.jpg")
-    p_bob = repo.register(bob, sender_id="bob", media_type="image", ext=".jpg", mime_type="image/jpeg", timestamp=ts.replace(minute=24), original_name="receipt.jpg")
+    p_alice = repo.register(
+        alice,
+        sender_id="alice",
+        media_type="image",
+        ext=".jpg",
+        mime_type="image/jpeg",
+        timestamp=ts,
+        original_name="receipt.jpg",
+    )
+    p_bob = repo.register(
+        bob,
+        sender_id="bob",
+        media_type="image",
+        ext=".jpg",
+        mime_type="image/jpeg",
+        timestamp=ts.replace(minute=24),
+        original_name="receipt.jpg",
+    )
     p_alice.write_bytes(b"jpeg-bytes")
     p_bob.write_bytes(b"jpeg-bytes")
     repo.set_caption(alice, repo.model_relpath(p_alice), "alice grocery receipt")
@@ -167,15 +233,30 @@ def test_search_only_returns_caller_user_records(tmp_path: Path):
 
 
 def test_purge_old_only_removes_old_registered_media(tmp_path: Path):
-    from benchclaw.utils import now_aware
     from datetime import timedelta as _td
+
+    from benchclaw.utils import now_aware
 
     repo = MediaRepository(tmp_path, max_age_days=30)
     addr = _addr("whatsapp", "555")
     now = now_aware()
 
-    old = repo.register(addr, sender_id="555", media_type="image", ext=".jpg", mime_type="image/jpeg", timestamp=now - _td(days=90))
-    new = repo.register(addr, sender_id="555", media_type="image", ext=".jpg", mime_type="image/jpeg", timestamp=now - _td(days=1))
+    old = repo.register(
+        addr,
+        sender_id="555",
+        media_type="image",
+        ext=".jpg",
+        mime_type="image/jpeg",
+        timestamp=now - _td(days=90),
+    )
+    new = repo.register(
+        addr,
+        sender_id="555",
+        media_type="image",
+        ext=".jpg",
+        mime_type="image/jpeg",
+        timestamp=now - _td(days=1),
+    )
     old.touch()
     new.touch()
 

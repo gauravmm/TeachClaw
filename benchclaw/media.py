@@ -186,7 +186,7 @@ class MediaRepository:
                     blocks.append(self.audio_block(address, path))
                 else:
                     blocks.append(self.image_block(address, path))
-            except (FileNotFoundError, ValueError):
+            except FileNotFoundError, ValueError:
                 logger.warning(f"Skipping unsupported or missing media file: {path}")
         return blocks
 
