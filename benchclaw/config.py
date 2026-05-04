@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings
 
 from benchclaw.agent.tools.base import ToolConfig
@@ -76,6 +76,34 @@ class ToolsConfig(BaseModel):
     web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
 
 
+class MediaConfig(BaseModel):
+    """Media subsystem configuration.
+
+    ``shared_roots`` maps an alias the model uses (e.g. ``cuteness``) to an
+    absolute or user-relative directory the alias resolves to. Files under
+    those directories are read-only and reachable as ``<alias>/<subpath>``.
+    """
+
+    shared_roots: dict[str, str] = Field(default_factory=dict)
+    max_age_days: int = 30
+
+    @field_validator("shared_roots")
+    @classmethod
+    def _validate_aliases(cls, value: dict[str, str]) -> dict[str, str]:
+        for alias in value:
+            if not alias:
+                raise ValueError("media.shared_roots alias must be non-empty")
+            if alias == "media":
+                raise ValueError(
+                    "media.shared_roots alias 'media' is reserved for the per-conversation sandbox"
+                )
+            if "/" in alias or "\\" in alias:
+                raise ValueError(f"media.shared_roots alias must not contain a slash: {alias!r}")
+            if alias in (".", ".."):
+                raise ValueError(f"media.shared_roots alias must not be {alias!r}")
+        return value
+
+
 class ChannelConfigs(BaseModel):
     """Optional built-in channel configuration."""
 
@@ -98,6 +126,7 @@ class Config(BaseSettings):
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
     channels: ChannelConfigs = Field(default_factory=ChannelConfigs)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    media: MediaConfig = Field(default_factory=MediaConfig)
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
 
     @property

@@ -1,8 +1,7 @@
-"""Media tools for re-reading, searching, and sending stored media files."""
+"""Media tools for re-reading, sending, and annotating stored media files."""
 
 from __future__ import annotations
 
-import json
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -17,17 +16,37 @@ def _require_address(ctx: ToolContext) -> MessageAddress:
     return ctx.address
 
 
+def _shared_roots_blurb(ctx: ToolContext) -> str:
+    """Suffix for tool descriptions listing operator-configured shared roots."""
+    aliases = ctx.media_repo.shared_root_aliases if ctx.media_repo else ()
+    if not aliases:
+        return ""
+    listed = ", ".join(f"'{a}/'" for a in aliases)
+    return (
+        f" Operator-configured shared roots are also available (read-only): {listed}. "
+        "Use them as '<alias>/<subpath>'."
+    )
+
+
 class ReadMediaTool(Tool):
     """Tool to re-load a media file (image or audio) into the LLM context."""
 
     class Params(BaseModel):
-        path: str = Field(description="Sandbox-relative media path, e.g. 'media/<filename>'.")
+        path: str = Field(
+            description=(
+                "Logical media path: 'media/<filename>' for this conversation's "
+                "store, or '<alias>/<subpath>' for a configured shared root."
+            )
+        )
 
     Params: ClassVar[type[BaseModel]] = Params
 
+    def __init__(self, shared_roots_blurb: str = "") -> None:
+        self._shared_roots_blurb = shared_roots_blurb
+
     @classmethod
-    def build(cls, _config: None, _ctx: ToolContext) -> "ReadMediaTool":
-        return cls()
+    def build(cls, _config: None, ctx: ToolContext) -> "ReadMediaTool":
+        return cls(shared_roots_blurb=_shared_roots_blurb(ctx))
 
     @property
     def name(self) -> str:
@@ -40,7 +59,7 @@ class ReadMediaTool(Tool):
             "Use the path shown in the inbound media listing, for example "
             "'media/20260504T182300-01.jpg'. Only call this when you need to examine "
             "a media file to answer a follow-up question."
-        )
+        ) + self._shared_roots_blurb
 
     async def execute(self, ctx: ToolContext, path: str, **kwargs: Any) -> ToolResult:
         if not ctx.media_repo:
@@ -55,8 +74,15 @@ class ReadMediaTool(Tool):
 class SendMediaTool(Tool):
     """Send a stored media file to the current chat."""
 
+    terminal_when_lone: ClassVar[bool] = True
+
     class Params(BaseModel):
-        path: str = Field(description="Sandbox-relative media path, e.g. 'media/<filename>'.")
+        path: str = Field(
+            description=(
+                "Logical media path: 'media/<filename>' for this conversation's "
+                "store, or '<alias>/<subpath>' for a configured shared root."
+            )
+        )
         caption: str = Field(
             default="",
             description=(
@@ -68,9 +94,12 @@ class SendMediaTool(Tool):
 
     Params: ClassVar[type[BaseModel]] = Params
 
+    def __init__(self, shared_roots_blurb: str = "") -> None:
+        self._shared_roots_blurb = shared_roots_blurb
+
     @classmethod
-    def build(cls, _config: None, _ctx: ToolContext) -> "SendMediaTool":
-        return cls()
+    def build(cls, _config: None, ctx: ToolContext) -> "SendMediaTool":
+        return cls(shared_roots_blurb=_shared_roots_blurb(ctx))
 
     @property
     def name(self) -> str:
@@ -80,9 +109,10 @@ class SendMediaTool(Tool):
     def description(self) -> str:
         return (
             "Send one stored media file (image or audio) from this conversation's "
-            "media store to the current chat. Put the user-visible text in the caption "
-            "rather than also saying in plain text that you sent it."
-        )
+            "media store to the current chat. The caption is delivered to the user "
+            "as the message body alongside the media; do NOT also emit a plain-text "
+            "reply afterward — end the turn after this call."
+        ) + self._shared_roots_blurb
 
     async def execute(self, ctx: ToolContext, path: str, caption: str = "", **_: Any) -> str:
         if not ctx.bus:
@@ -92,78 +122,23 @@ class SendMediaTool(Tool):
         addr = _require_address(ctx)
         ctx.media_repo.resolve_file(addr, path)  # validates path exists
         await ctx.bus.publish_outbound(OutboundMessage(address=addr, content=caption, media=[path]))
-        return f"Media sent to {addr}"
-
-
-class SearchMediaTool(Tool):
-    """Search this conversation's captioned media."""
-
-    class Params(BaseModel):
-        query: str = Field(default="", description="Free-text search over captions and metadata.")
-        media_type: str | None = Field(
-            default=None,
-            description="Optional filter by media type: 'image', 'audio', 'voice', etc.",
-        )
-        sender_id: str | None = Field(default=None, description="Optional sender_id filter.")
-        date_from: str | None = Field(
-            default=None, description="Optional inclusive lower timestamp/date bound (ISO)."
-        )
-        date_to: str | None = Field(
-            default=None, description="Optional inclusive upper timestamp/date bound (ISO)."
-        )
-        limit: int = Field(default=10, ge=1, le=20, description="Maximum number of results.")
-
-    Params: ClassVar[type[BaseModel]] = Params
-
-    @classmethod
-    def build(cls, _config: None, _ctx: ToolContext) -> "SearchMediaTool":
-        return cls()
-
-    @property
-    def name(self) -> str:
-        return "search_media"
-
-    @property
-    def description(self) -> str:
         return (
-            "Search this conversation's captioned media (images, audio) using stored "
-            "metadata and model-authored captions. Use this when you remember a media "
-            "file but not its exact path."
+            f"Media and caption delivered to {addr}. The caption was sent as the "
+            "message text — do not send a follow-up text reply this turn."
         )
-
-    async def execute(
-        self,
-        ctx: ToolContext,
-        query: str = "",
-        media_type: str | None = None,
-        sender_id: str | None = None,
-        date_from: str | None = None,
-        date_to: str | None = None,
-        limit: int = 10,
-        **_: Any,
-    ) -> str:
-        if not ctx.media_repo:
-            raise RuntimeError("search_media requires media repository access")
-        addr = _require_address(ctx)
-        results = ctx.media_repo.search(
-            addr,
-            query=query or None,
-            sender_id=sender_id,
-            date_from=date_from,
-            date_to=date_to,
-            limit=limit,
-        )
-        if media_type:
-            results = [r for r in results if r.get("media_type") == media_type]
-        return json.dumps(results, ensure_ascii=False)
 
 
 class AnnotateMediaTool(Tool):
     """Persist a caption or annotation for a stored media file."""
 
     class Params(BaseModel):
-        path: str = Field(description="Sandbox-relative media path to annotate.")
-        caption: str = Field(description="Searchable caption or annotation text.")
+        path: str = Field(
+            description=(
+                "Sandbox media path to annotate, e.g. 'media/<filename>'. "
+                "Shared roots are read-only and cannot be annotated."
+            )
+        )
+        caption: str = Field(description="Caption or annotation text to persist with the file.")
 
     Params: ClassVar[type[BaseModel]] = Params
 
@@ -179,9 +154,9 @@ class AnnotateMediaTool(Tool):
     def description(self) -> str:
         return (
             "Save a concise caption or annotation for a stored media file (image or audio) "
-            "in this conversation. Use this after receiving media so future turns can "
-            "search or answer follow-up questions without re-reading it. For audio, "
-            "include a transcript summary, tone/intent notes, and language if non-English."
+            "in this conversation's sandbox. Use this after receiving media so future turns "
+            "can answer follow-up questions without re-reading it. For audio, include a "
+            "transcript summary, tone/intent notes, and language if non-English."
         )
 
     async def execute(self, ctx: ToolContext, path: str, caption: str, **_: Any) -> str:

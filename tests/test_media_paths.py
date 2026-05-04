@@ -198,40 +198,6 @@ def test_serial_rebuilt_after_reload(tmp_path: Path):
     assert p2.name == "20260310T142300-02.jpg"
 
 
-def test_search_only_returns_caller_user_records(tmp_path: Path):
-    repo = MediaRepository(tmp_path)
-    alice = _addr("telegram", "alice")
-    bob = _addr("telegram", "bob")
-    ts = datetime(2026, 3, 10, 14, 23, 0)
-
-    p_alice = repo.register(
-        alice,
-        sender_id="alice",
-        media_type="image",
-        ext=".jpg",
-        mime_type="image/jpeg",
-        timestamp=ts,
-        original_name="receipt.jpg",
-    )
-    p_bob = repo.register(
-        bob,
-        sender_id="bob",
-        media_type="image",
-        ext=".jpg",
-        mime_type="image/jpeg",
-        timestamp=ts.replace(minute=24),
-        original_name="receipt.jpg",
-    )
-    p_alice.write_bytes(b"jpeg-bytes")
-    p_bob.write_bytes(b"jpeg-bytes")
-    repo.set_caption(alice, repo.model_relpath(p_alice), "alice grocery receipt")
-    repo.set_caption(bob, repo.model_relpath(p_bob), "bob grocery receipt")
-
-    alice_results = repo.search(alice, query="receipt", limit=10)
-
-    assert [r["path"] for r in alice_results] == [repo.model_relpath(p_alice)]
-
-
 def test_purge_old_only_removes_old_registered_media(tmp_path: Path):
     from datetime import timedelta as _td
 

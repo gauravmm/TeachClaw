@@ -71,6 +71,12 @@ class Tool:
     Params: ClassVar[type[BaseModel]] = _NoParams
     _task: Task | None = None
 
+    # When True, calling this tool counts as the model's user-facing reply for
+    # the turn. The agent loop will not inject the "you did not provide a text
+    # response" nudge if the only tool calls in the prior assistant turn were
+    # terminal-when-lone tools. Defaults to False.
+    terminal_when_lone: ClassVar[bool] = False
+
     @classmethod
     def build(cls, config: Any, ctx: "ToolContext") -> "Tool":
         """Instantiate this tool from a config object and build context."""

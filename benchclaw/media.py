@@ -6,8 +6,12 @@ Each conversation owns its own media tree under
 registered in the same second. Per-user metadata lives at
 ``storage/<channel>/<chat_id>/.media.json``.
 
-The model sees media via the sandbox-relative path ``media/<filename>``;
-nothing outside the per-user storage tree is reachable.
+The model sees per-conversation media via the sandbox-relative path
+``media/<filename>``. In addition, the operator can configure read-only
+shared roots in ``config.yaml``; those are addressable as
+``<alias>/<subpath>`` and resolve to absolute paths off-workspace.
+Nothing outside the per-user storage tree or a configured shared root
+is reachable.
 """
 
 from __future__ import annotations
@@ -17,7 +21,6 @@ import json
 from collections.abc import Iterable
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 import filetype
 from loguru import logger
@@ -25,6 +28,7 @@ from pydantic import BaseModel, ConfigDict
 
 from benchclaw import storage as storage_layout
 from benchclaw.bus import MessageAddress
+from benchclaw.storage import _human_size
 from benchclaw.utils import _parse_timestamp, ensure_aware, now_aware
 
 MEDIA_PREFIX = "media"
@@ -68,10 +72,66 @@ class MediaRepository:
     ``media/20260504T182300-01.jpg``.
     """
 
-    def __init__(self, workspace: Path, max_age_days: int = 30) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        shared_roots: dict[str, Path] | None = None,
+        max_age_days: int = 30,
+    ) -> None:
         self.workspace = workspace
         self.max_age_days = max_age_days
         self._cache: dict[MessageAddress, dict[str, MediaEntry]] = {}
+        self._shared_roots: dict[str, Path] = {}
+        for alias, root in (shared_roots or {}).items():
+            resolved = Path(root).expanduser()
+            if not resolved.is_dir():
+                logger.warning(
+                    f"Shared media root '{alias}' -> {resolved} does not exist; skipping"
+                )
+                continue
+            self._shared_roots[alias] = resolved.resolve()
+
+    @property
+    def shared_root_aliases(self) -> tuple[str, ...]:
+        return tuple(sorted(self._shared_roots))
+
+    def shared_root_listing(self) -> str | None:
+        """Deterministic listing of every configured shared root.
+
+        Used in the synthetic ``<storage_listing>`` turn so the model
+        can discover what's reachable. Returns ``None`` when no shared
+        roots are configured. Lists files (with sizes) and immediate
+        subdirectory item counts, alpha-sorted, no timestamps — same
+        cache-stable shape as ``storage.listing_for_user``.
+        """
+        if not self._shared_roots:
+            return None
+        sections: list[str] = []
+        for alias in sorted(self._shared_roots):
+            root = self._shared_roots[alias]
+            section_lines = [f"{alias}/:"]
+            try:
+                children = sorted(root.iterdir(), key=lambda p: p.name)
+            except OSError:
+                children = []
+            for child in children:
+                if child.is_file():
+                    try:
+                        size = child.stat().st_size
+                    except OSError:
+                        size = 0
+                    section_lines.append(f"  {child.name} ({_human_size(size)})")
+                elif child.is_dir():
+                    try:
+                        count = sum(1 for _ in child.iterdir())
+                    except OSError:
+                        count = 0
+                    suffix = "" if count == 0 else f" ({count} item{'s' if count != 1 else ''})"
+                    section_lines.append(f"  {child.name}/{suffix}")
+            if len(section_lines) == 1:
+                section_lines[0] = f"{alias}/: (empty)"
+            sections.append("\n".join(section_lines))
+        return "\n".join(sections)
 
     def _meta_path(self, address: MessageAddress) -> Path:
         return storage_layout.storage_root(self.workspace, address) / ".media.json"
@@ -146,16 +206,32 @@ class MediaRepository:
         return abs_path
 
     def resolve_file(self, address: MessageAddress, path: str) -> tuple[Path, str | None]:
-        """Resolve a sandbox-relative media path under this user's media dir."""
-        relpath = self._normalize_relpath(path)
-        abs_path = self._media_dir(address) / Path(relpath).name
-        if not abs_path.is_file():
-            raise FileNotFoundError(f"Media file not found: {relpath}")
-        entry = self._entries(address).get(relpath)
-        mime_type = entry.mime_type if entry else None
-        if not mime_type:
-            mime_type = filetype.guess_mime(str(abs_path))
-        return abs_path, mime_type
+        """Resolve a logical media path to an absolute file + MIME.
+
+        Logical paths are either ``media/<filename>`` (per-conversation
+        sandbox) or ``<alias>/<subpath>`` for a configured shared root.
+        """
+        kind, *rest = self._resolve_logical(path)
+        if kind == "sandbox":
+            (filename,) = rest
+            relpath = f"{MEDIA_PREFIX}/{filename}"
+            abs_path = self._media_dir(address) / filename
+            if not abs_path.is_file():
+                raise FileNotFoundError(f"Media file not found: {relpath}")
+            entry = self._entries(address).get(relpath)
+            mime_type = entry.mime_type if entry else None
+            if not mime_type:
+                mime_type = filetype.guess_mime(str(abs_path))
+            return abs_path, mime_type
+        # shared
+        alias, sub_parts = rest
+        root = self._shared_roots[alias]
+        candidate = root.joinpath(*sub_parts).resolve()
+        if not candidate.is_relative_to(root):
+            raise ValueError(f"Path escapes shared root '{alias}': {path}")
+        if not candidate.is_file():
+            raise FileNotFoundError(f"Media file not found: {alias}/{'/'.join(sub_parts)}")
+        return candidate, filetype.guess_mime(str(candidate))
 
     def image_block(self, address: MessageAddress, path: str) -> dict[str, object]:
         abs_path, mime_type = self.resolve_file(address, path)
@@ -191,6 +267,9 @@ class MediaRepository:
         return blocks
 
     def set_caption(self, address: MessageAddress, path: str, caption: str) -> None:
+        kind, *_ = self._resolve_logical(path)
+        if kind != "sandbox":
+            raise ValueError(f"Cannot annotate media in a read-only shared root: {path}")
         relpath = self._normalize_relpath(path)
         abs_path, mime_type = self.resolve_file(address, relpath)
         entries = self._entries(address)
@@ -212,90 +291,6 @@ class MediaRepository:
                 entry.original_name = abs_path.name
         entry.caption = caption
         self._save(address)
-
-    def iter_records(self, address: MessageAddress) -> Iterable[dict[str, Any]]:
-        for relpath, entry in sorted(self._entries(address).items()):
-            yield {
-                "path": relpath,
-                "sender_id": entry.sender_id,
-                "timestamp": entry.timestamp,
-                "media_type": entry.media_type,
-                "mime_type": entry.mime_type,
-                "original_name": entry.original_name,
-                "caption": entry.caption,
-            }
-
-    def search(
-        self,
-        address: MessageAddress,
-        *,
-        query: str | None = None,
-        sender_id: str | None = None,
-        date_from: str | None = None,
-        date_to: str | None = None,
-        limit: int = 10,
-    ) -> list[dict[str, Any]]:
-        """Search this user's captioned media."""
-        limit = max(1, min(limit, 20))
-        needle = (query or "").strip().casefold()
-        lower_from = self._parse_date_bound(date_from, end=False)
-        upper_to = self._parse_date_bound(date_to, end=True)
-        matches: list[tuple[int, float, dict[str, Any]]] = []
-
-        for record in self.iter_records(address):
-            if record.get("caption") is None:
-                continue
-            if sender_id is not None and record["sender_id"] != sender_id:
-                continue
-            record_ts = self._record_timestamp(record)
-            if lower_from is not None and (record_ts is None or record_ts < lower_from):
-                continue
-            if upper_to is not None and (record_ts is None or record_ts > upper_to):
-                continue
-            score = self._score_record(record, needle)
-            if needle and score < 0:
-                continue
-            ts_key = record_ts.timestamp() if record_ts else float("-inf")
-            matches.append((score, ts_key, record))
-
-        matches.sort(key=lambda item: (-item[0], -item[1], item[2]["path"]))
-        return [record for _, _, record in matches[:limit]]
-
-    @staticmethod
-    def _parse_date_bound(value: str | None, *, end: bool) -> datetime | None:
-        if not value:
-            return None
-        parsed = _parse_timestamp(value)
-        if "T" in value:
-            return parsed
-        if end:
-            return parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
-        return parsed.replace(hour=0, minute=0, second=0, microsecond=0)
-
-    @staticmethod
-    def _record_timestamp(record: dict[str, Any]) -> datetime | None:
-        value = record.get("timestamp")
-        return _parse_timestamp(value) if value else None
-
-    @staticmethod
-    def _score_record(record: dict[str, Any], needle: str) -> int:
-        if not needle:
-            return 0
-        path = str(record["path"]).casefold()
-        name = (record.get("original_name") or "").casefold()
-        caption = (record.get("caption") or "").casefold()
-        mime = (record.get("mime_type") or "").casefold()
-        sender_id = (record.get("sender_id") or "").casefold()
-
-        if any(value == needle for value in (path, name, sender_id)):
-            return 300
-        if needle in path or needle in name:
-            return 200
-        if needle in caption:
-            return 100
-        if any(needle in hay for hay in (mime, sender_id)):
-            return 50
-        return -1
 
     async def __aenter__(self) -> "MediaRepository":
         purged = self._purge_old()
@@ -335,21 +330,47 @@ class MediaRepository:
                     self._save(addr)
         return deleted
 
-    @staticmethod
-    def _normalize_relpath(path: str) -> str:
+    def _resolve_logical(self, path: str) -> tuple:
+        """Classify a logical media path.
+
+        Returns ``("sandbox", filename)`` for ``media/<filename>`` or
+        ``("shared", alias, sub_parts)`` for ``<alias>/<subpath>``.
+        Raises ``ValueError`` for malformed or escape-attempting paths.
+        """
         rel = Path(path)
         if rel.is_absolute():
-            raise ValueError(f"Path is outside the media sandbox: {path}")
-        parts = []
+            raise ValueError(f"Media path must be relative: {path}")
+        parts: list[str] = []
         for part in rel.parts:
             if part in ("", "."):
                 continue
             if part == "..":
-                raise ValueError(f"Path is outside the media sandbox: {path}")
+                raise ValueError(f"Media path must not contain '..': {path}")
             parts.append(part)
-        if len(parts) != 2 or parts[0] != MEDIA_PREFIX:
-            raise ValueError(f"Media paths must look like 'media/<filename>': {path}")
-        return f"{MEDIA_PREFIX}/{parts[1]}"
+        if not parts:
+            raise ValueError(f"Empty media path: {path}")
+        head, *rest = parts
+        if head == MEDIA_PREFIX:
+            if len(rest) != 1:
+                raise ValueError(f"Sandbox paths must look like 'media/<filename>': {path}")
+            return ("sandbox", rest[0])
+        if head in self._shared_roots:
+            if not rest:
+                raise ValueError(
+                    f"Shared media path must include a subpath: '{head}/<filename>': {path}"
+                )
+            return ("shared", head, tuple(rest))
+        raise ValueError(
+            f"Unknown media root '{head}'. Expected 'media/' or one of: "
+            f"{', '.join(sorted(self._shared_roots) or ['<none configured>'])}"
+        )
+
+    def _normalize_relpath(self, path: str) -> str:
+        kind, *rest = self._resolve_logical(path)
+        if kind == "sandbox":
+            return f"{MEDIA_PREFIX}/{rest[0]}"
+        alias, sub_parts = rest
+        return f"{alias}/{'/'.join(sub_parts)}"
 
     @staticmethod
     def _next_serial(entries: dict[str, MediaEntry], media_dir: Path, prefix: str) -> str:

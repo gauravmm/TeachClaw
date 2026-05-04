@@ -184,10 +184,8 @@ dependency and the ingestion-time latency of a transcription API call. The exist
 
 **Tradeoff: annotation is not immediate.**
 The caption is empty until the model's response comes back with an `annotate_media` call.
-This means a `search_media` query issued between audio arrival and the model's response
-would not find the audio by content. In practice this window is seconds, and the media is
-still findable by sender, date, and address during that gap. This is the same behavior
-images have today — captions are model-authored, not pre-populated.
+In practice this window is seconds. This is the same behavior images have today — captions
+are model-authored, not pre-populated.
 
 **Tradeoff: annotation quality depends on the model.**
 A weaker or non-audio-capable model might produce a poor or missing annotation. This is
@@ -199,7 +197,6 @@ audio well, that's a model selection problem, not an architecture problem.
 
 **Rename and generalize:**
 
-- `search_images` → `search_media` (add `media_type` filter parameter; default: search all).
 - `read_image` → `read_media`. For images, returns an `image_url` block (unchanged). For
   audio, returns an `input_audio` block so the model can re-listen.
 - `send_image` → `send_media`. For audio, sends via the outbound message bus. (Outbound
@@ -254,8 +251,8 @@ LLM response
 4. **Generalize session rendering** — rename `pending_image_paths` →
    `pending_media_paths`, update `_build_pending_image_blocks` to use
    `build_media_blocks`.
-5. **Generalize agent tools** — rename `search_images`/`read_image`/`send_image` to
-   `search_media`/`read_media`/`send_media`, drop the old names.
+5. **Generalize agent tools** — rename `read_image`/`send_image` to `read_media`/`send_media`,
+   drop the old names.
 6. **Delete `providers/transcription.py`** — no longer needed.
 
 ## Scope boundaries

@@ -1116,26 +1116,32 @@ class TelegramChannel(BaseChannel):
         assert self._app
         try:
             if self.media_repo and not Path(msg.media[0]).is_absolute():
-                image_path, mime = self.media_repo.resolve_file(msg.address, msg.media[0])
+                media_path, mime = self.media_repo.resolve_file(msg.address, msg.media[0])
             else:
-                image_path = Path(msg.media[0])
-                if not image_path.is_absolute():
-                    image_path = Path.cwd() / image_path
-                if not image_path.is_file():
-                    raise FileNotFoundError(f"Telegram image not found: {msg.media[0]}")
+                media_path = Path(msg.media[0])
+                if not media_path.is_absolute():
+                    media_path = Path.cwd() / media_path
+                if not media_path.is_file():
+                    raise FileNotFoundError(f"Telegram media not found: {msg.media[0]}")
                 import filetype
 
-                mime = filetype.guess_mime(str(image_path))
-            if not mime or not mime.startswith("image/"):
-                raise ValueError(f"Telegram outbound media is not an image: {msg.media[0]}")
+                mime = filetype.guess_mime(str(media_path))
+            kind = (mime or "").split("/", 1)[0]
             caption = _markdown_to_telegram_html(text) if text else None
-            with image_path.open("rb") as photo:
-                sent = await self._app.bot.send_photo(
-                    chat_id=chat_id,
-                    photo=photo,
-                    caption=caption,
-                    parse_mode="HTML" if caption else None,
-                )
+            send_kwargs = {
+                "chat_id": chat_id,
+                "caption": caption,
+                "parse_mode": "HTML" if caption else None,
+            }
+            with media_path.open("rb") as fh:
+                if kind == "image":
+                    sent = await self._app.bot.send_photo(photo=fh, **send_kwargs)
+                elif kind == "video":
+                    sent = await self._app.bot.send_video(video=fh, **send_kwargs)
+                elif kind == "audio":
+                    sent = await self._app.bot.send_audio(audio=fh, **send_kwargs)
+                else:
+                    sent = await self._app.bot.send_document(document=fh, **send_kwargs)
             self._record_message_map(st, sent.message_id, citations, tool_calls)
         except Exception as e:
             logger.error(f"Error sending Telegram media: {e}")

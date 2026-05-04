@@ -34,7 +34,14 @@ def run(args) -> None:
             provider = LiteLLMProvider(config.provider)
 
         async def run():
-            async with MediaRepository(config.workspace_path) as media_repo:
+            shared_roots = {
+                alias: Path(root).expanduser() for alias, root in config.media.shared_roots.items()
+            }
+            async with MediaRepository(
+                config.workspace_path,
+                shared_roots=shared_roots,
+                max_age_days=config.media.max_age_days,
+            ) as media_repo:
                 channels = ChannelManager(config, bus, media_repo=media_repo)
                 agent = AgentLoop(
                     config=config,

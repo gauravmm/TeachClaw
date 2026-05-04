@@ -102,3 +102,8 @@ class ToolRegistry:
 
     def __contains__(self, name: str) -> bool:
         return name in self._tools or (self._mcp_manager is not None and name in self._mcp_manager)
+
+    def is_terminal_when_lone(self, name: str) -> bool:
+        """True if a turn whose only tool call is ``name`` should not be nudged."""
+        tool = self._tools.get(name)
+        return bool(tool and type(tool).terminal_when_lone)

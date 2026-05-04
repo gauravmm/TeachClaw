@@ -12,7 +12,6 @@ from benchclaw.agent.tools.filesystem import (
 from benchclaw.agent.tools.media import (
     AnnotateMediaTool,
     ReadMediaTool,
-    SearchMediaTool,
     SendMediaTool,
 )
 from benchclaw.agent.tools.shell import ExecTool
@@ -28,7 +27,6 @@ BUILTIN_TOOLS: tuple[tuple[str, type[Tool]], ...] = (
     ("read_media", ReadMediaTool),
     ("annotate_media", AnnotateMediaTool),
     ("send_media", SendMediaTool),
-    ("search_media", SearchMediaTool),
     ("exec", ExecTool),
     ("web_search", WebSearchTool),
     ("web_fetch", WebFetchTool),

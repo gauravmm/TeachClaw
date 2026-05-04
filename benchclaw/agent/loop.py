@@ -519,6 +519,11 @@ class AgentLoop:
             return
 
         if not content:
+            if self._prior_turn_was_terminal(session):
+                logger.info(
+                    f"LLM returned empty response for {addr} after a terminal tool call — no nudge"
+                )
+                return
             logger.warning(
                 f"LLM returned empty response (no text, no tool calls) for {addr} — injecting nudge"
             )
@@ -539,6 +544,24 @@ class AgentLoop:
                 metadata={"tool_calls": list(state.tool_call_trace)},
             )
         )
+
+    def _prior_turn_was_terminal(self, session: Session) -> bool:
+        """Did the most recent assistant turn consist only of terminal-when-lone tool calls?
+
+        Used to suppress the empty-response nudge when the model has already
+        delivered the user-facing reply via a tool (e.g. ``send_media``).
+        """
+        for event in reversed(session.events):
+            if not isinstance(event, AssistantEvent):
+                continue
+            if not event.tool_calls:
+                return False
+            for tc in event.tool_calls:
+                name = tc.get("function", {}).get("name", "")
+                if not self.tools.is_terminal_when_lone(name):
+                    return False
+            return True
+        return False
 
     @staticmethod
     def _flush_pending_system_events(session: Session, state: _AddressState) -> None:
