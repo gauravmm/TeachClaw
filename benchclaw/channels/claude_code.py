@@ -55,7 +55,9 @@ class ClaudeCodeConfig(ChannelConfig):
     # AI-to-AI communication: always pay attention (no group summon needed)
     attention_policy: AttentionPolicy = AttentionPolicy.ALWAYS
 
-    def make_channel(self, bus: MessageBus, media_repo: Any = None) -> "ClaudeCodeChannel":
+    def make_channel(
+        self, bus: MessageBus, media_repo: Any = None, **_: Any
+    ) -> "ClaudeCodeChannel":
         return ClaudeCodeChannel(self, bus)
 
     def is_configured(self) -> bool:

@@ -8,7 +8,7 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import filetype
 import websockets
@@ -39,7 +39,7 @@ class WhatsAppConfig(ChannelConfig):
     bridge_token: str = ""  # Shared token for bridge auth (optional, recommended)
 
     def make_channel(
-        self, bus: MessageBus, media_repo: MediaRepository | None = None
+        self, bus: MessageBus, media_repo: MediaRepository | None = None, **_: Any
     ) -> "WhatsAppChannel":
         return WhatsAppChannel(self, bus, media_repo=media_repo)
 

@@ -29,10 +29,15 @@ class ChannelManager:
         self.channels: dict[str, BaseChannel] = {}
         self._stack = AsyncExitStack()
 
+        mermaid_mmdc_path = config.mermaid.mmdc_path
         for name, chconfig in self.config.channels:
             if not chconfig.is_configured():
                 continue
-            self.channels[name] = chconfig.make_channel(self.bus, media_repo=media_repo)
+            self.channels[name] = chconfig.make_channel(
+                self.bus,
+                media_repo=media_repo,
+                mermaid_mmdc_path=mermaid_mmdc_path,
+            )
 
     async def __aenter__(self) -> "ChannelManager":
         await self._stack.__aenter__()

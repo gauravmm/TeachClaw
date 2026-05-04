@@ -117,9 +117,14 @@ class TelegramConfig(ChannelConfig):
     message_map_ttl_seconds: int = 24 * 3600
 
     def make_channel(
-        self, bus: MessageBus, media_repo: MediaRepository | None = None
+        self,
+        bus: MessageBus,
+        media_repo: MediaRepository | None = None,
+        mermaid_mmdc_path: str | None = None,
     ) -> "TelegramChannel":
-        return TelegramChannel(self, bus, media_repo=media_repo)
+        return TelegramChannel(
+            self, bus, media_repo=media_repo, mermaid_mmdc_path=mermaid_mmdc_path
+        )
 
     def is_configured(self) -> bool:
         return bool(self.token.strip())
@@ -400,10 +405,12 @@ class TelegramChannel(BaseChannel):
         config: TelegramConfig,
         bus: MessageBus,
         media_repo: MediaRepository | None = None,
+        mermaid_mmdc_path: str | None = None,
     ):
         super().__init__(config, bus)
         self.config: TelegramConfig = config
         self.media_repo = media_repo
+        self.mermaid_mmdc_path = mermaid_mmdc_path
         self._app: Application | None = None
         self._typing_tasks: dict[str, asyncio.Task] = {}
         self._bot_username: str | None = None
@@ -1033,7 +1040,9 @@ class TelegramChannel(BaseChannel):
                 start, end = blk.span
                 if start > cursor:
                     segments.append(("text", text[cursor:start]))
-                rendered = await mermaid_renderer.render(blk.source, self.workspace)
+                rendered = await mermaid_renderer.render(
+                    blk.source, self.workspace, mmdc_path=self.mermaid_mmdc_path
+                )
                 segments.append(("mmd", rendered))
                 cursor = end
             if cursor < len(text):

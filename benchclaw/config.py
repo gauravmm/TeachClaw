@@ -104,6 +104,17 @@ class MediaConfig(BaseModel):
         return value
 
 
+class MermaidConfig(BaseModel):
+    """Mermaid renderer configuration.
+
+    ``mmdc_path`` overrides ``shutil.which("mmdc")`` lookup. Useful when the
+    bot runs in an environment whose PATH doesn't include nvm/npm bin dirs
+    (e.g. systemd unit, or python launched outside an interactive shell).
+    """
+
+    mmdc_path: str | None = None
+
+
 class ChannelConfigs(BaseModel):
     """Optional built-in channel configuration."""
 
@@ -127,6 +138,7 @@ class Config(BaseSettings):
     channels: ChannelConfigs = Field(default_factory=ChannelConfigs)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     media: MediaConfig = Field(default_factory=MediaConfig)
+    mermaid: MermaidConfig = Field(default_factory=MermaidConfig)
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
 
     @property

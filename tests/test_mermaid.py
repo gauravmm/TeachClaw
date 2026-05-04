@@ -74,15 +74,18 @@ def test_cache_key_is_stable_and_theme_sensitive():
 def _install_fake_mmdc(
     bin_dir: Path, monkeypatch: pytest.MonkeyPatch, *, exit_code: int = 0
 ) -> Path:
-    """Install a fake mmdc shim on PATH that writes PNG_1X1 to the -o argument."""
+    """Install a fake mmdc shim on PATH that writes PNG_1X1 to the -o argument
+    and dumps its full argv to <bin_dir>/argv.log."""
     bin_dir.mkdir(parents=True, exist_ok=True)
     # POSIX-safe inline base64 of PNG_1X1.
     import base64
 
     encoded = base64.b64encode(PNG_1X1).decode("ascii")
+    argv_log = bin_dir / "argv.log"
     script = (
-        "#!/usr/bin/env bash\n"
+        "#!/bin/bash\n"
         "set -e\n"
+        f'printf "%s\\n" "$@" > "{argv_log}"\n'
         "out=\n"
         'while [ "$#" -gt 0 ]; do\n'
         '  case "$1" in\n'
@@ -90,7 +93,7 @@ def _install_fake_mmdc(
         "    *) shift ;;\n"
         "  esac\n"
         "done\n"
-        f'echo "{encoded}" | base64 -d > "$out"\n'
+        f'echo "{encoded}" | /usr/bin/base64 -d > "$out"\n'
         f"exit {exit_code}\n"
     )
     mmdc = bin_dir / "mmdc"
@@ -149,6 +152,51 @@ async def test_render_failure_preserves_source(tmp_path: Path, monkeypatch: pyte
     assert result.source == "not actually a diagram"
     assert result.png_path is None
     assert result.error and result.error.startswith("mmdc returncode=1")
+
+
+@pytest.mark.asyncio
+async def test_render_passes_no_sandbox_puppeteer_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import json
+
+    bin_dir = tmp_path / "bin"
+    _install_fake_mmdc(bin_dir, monkeypatch)
+    result = await mermaid_renderer.render(SAMPLE_FLOWCHART, tmp_path)
+    assert result.status == "ok"
+
+    argv = (bin_dir / "argv.log").read_text(encoding="utf-8").splitlines()
+    assert "-p" in argv
+    cfg_path = Path(argv[argv.index("-p") + 1])
+    assert cfg_path.is_file()
+    assert json.loads(cfg_path.read_text(encoding="utf-8")) == {"args": ["--no-sandbox"]}
+
+
+@pytest.mark.asyncio
+async def test_render_uses_explicit_mmdc_path_when_not_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """If config.mermaid.mmdc_path is set, it wins over PATH lookup."""
+    bin_dir = tmp_path / "bin"
+    _install_fake_mmdc(bin_dir, monkeypatch)
+    explicit = bin_dir / "mmdc"
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))  # remove from PATH
+
+    result = await mermaid_renderer.render(SAMPLE_FLOWCHART, tmp_path, mmdc_path=str(explicit))
+    assert result.status == "ok"
+    assert result.png_path is not None and result.png_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_render_falls_back_to_path_when_explicit_path_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    bin_dir = tmp_path / "bin"
+    _install_fake_mmdc(bin_dir, monkeypatch)
+    bogus = tmp_path / "does-not-exist" / "mmdc"
+
+    result = await mermaid_renderer.render(SAMPLE_FLOWCHART, tmp_path, mmdc_path=str(bogus))
+    assert result.status == "ok"  # PATH lookup found the shim
 
 
 @pytest.mark.asyncio

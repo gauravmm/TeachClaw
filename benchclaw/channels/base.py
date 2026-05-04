@@ -29,7 +29,12 @@ class ChannelConfig(BaseModel):
     attention_lookback: DurationField = timedelta(minutes=10)
     attention_gap: DurationField = timedelta(minutes=5)
 
-    def make_channel(self, bus: "MessageBus", media_repo: Any = None) -> "BaseChannel":
+    def make_channel(
+        self,
+        bus: "MessageBus",
+        media_repo: Any = None,
+        mermaid_mmdc_path: str | None = None,
+    ) -> "BaseChannel":
         raise NotImplementedError(f"{type(self).__name__} must implement make_channel()")
 
     def is_configured(self) -> bool:

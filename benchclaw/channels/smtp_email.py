@@ -26,7 +26,7 @@ class EmailConfig(ChannelConfig):
 
     attention_policy: AttentionPolicy = AttentionPolicy.ALWAYS
 
-    def make_channel(self, bus: MessageBus) -> "EmailChannel":
+    def make_channel(self, bus: MessageBus, **_: Any) -> "EmailChannel":
         return EmailChannel(self, bus)
 
     # IMAP (receive)
