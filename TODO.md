@@ -163,17 +163,14 @@ Canonical design in **`spec/TELEGRAM.md`**.
   — vLLM's `/metrics` endpoint exposes aggregate prefix-cache stats
   but not per-request fields. Revisit if that changes.
 
-### Citation / reaction-trace UX polish
-- [ ] When the bot answers a `SOURCES_REACTION` (❤️) or
+### Citation / reaction-trace UX polish — **DONE (awaiting test)**
+- [x] When the bot answers a `SOURCES_REACTION` (❤️) or
   `TRACE_REACTION` (🔥), send the response as a Telegram **reply** to
   the originating bot message rather than as a standalone message in
-  the chat. Pass `reply_to_message_id=message_id` (and likely
-  `allow_sending_without_reply=True` so the call doesn't fail if the
-  original was deleted) on every `bot.send_message` call inside
-  `_reaction_sources` and `_reaction_trace`. Touches `_safe_send_text`
-  — that helper currently doesn't accept a reply-target, so either
-  give it an optional `reply_to_message_id` parameter or call
-  `bot.send_message` directly from those two handlers.
+  the chat. `_safe_send_text` gained an optional `reply_to_message_id`
+  kwarg (and passes `allow_sending_without_reply=True` so the call
+  doesn't fail if the original was deleted); `_reaction_sources` and
+  `_reaction_trace` thread the reply on every branch.
 
 ### Citation system — how it works (reference)
 End-to-end map of the citation/reaction plumbing, captured here so
