@@ -190,23 +190,25 @@ def _extract_kb_records(tool_calls: list[ToolCallTrace]) -> dict[str, dict]:
     return records
 
 
-def _render_citation_list(citations: list[dict[str, str]], kb_records: dict[str, dict]) -> str:
+def _render_citation_list(citations: list[dict], kb_records: dict[str, dict]) -> str:
     """Render the source list emitted on a SOURCES_REACTION reaction.
 
-    For each citation, emit one line in Telegram-HTML:
+    For each citation, emit one heading line plus one indented bullet per
+    claim phrasing the model used (deduped by exact match in ``_ref``):
 
       [N] <a href="SOURCE_URL">title — section_path</a>
-          claim text
+          • first claim text
+          • second claim text
 
     When a kb_record is missing for the cited id (model cited an id we
     didn't see this turn, or the source URL is blank), fall back to a bare
-    `<code>id</code>` line. Only the URL escapes need careful handling
+    `<code>id</code>` heading. Only the URL escapes need careful handling
     since it goes inside an href; everything else gets html.escape.
     """
     lines: list[str] = []
     for i, c in enumerate(citations, start=1):
         cid = c.get("id", "?")
-        claim = (c.get("claim") or "").strip()
+        claims = [str(s).strip() for s in c.get("claims") or [] if str(s).strip()]
         record = kb_records.get(cid) or {}
         title = (record.get("title") or "").strip()
         section_path = (record.get("section_path") or "").strip()
@@ -220,8 +222,11 @@ def _render_citation_list(citations: list[dict[str, str]], kb_records: dict[str,
             head = f'[{i}] <a href="{html.escape(source, quote=True)}">{label_html}</a>'
         else:
             head = f"[{i}] <code>{html.escape(cid)}</code>"
-        if claim:
-            head += f"\n    {html.escape(claim[:240])}"
+        if len(claims) == 1:
+            head += f"\n    {html.escape(claims[0][:240])}"
+        elif claims:
+            for claim in claims:
+                head += f"\n    • {html.escape(claim[:240])}"
         lines.append(head)
     return "\n".join(lines)
 
@@ -234,7 +239,7 @@ _CITATION_BARE_RE = re.compile(r"<citation\s+id=\"([^\"]+)\"\s*/?>", re.IGNORECA
 _LIST_BULLET_RE = re.compile(r"^\s*[-*•]\s*")
 
 
-def _strip_citations(text: str) -> tuple[str, list[dict[str, str]]]:
+def _strip_citations(text: str) -> tuple[str, list[dict]]:
     """Pull `<citation>` markers out of model text and inject `[N]` refs.
 
     Two recognized forms, in order:
@@ -245,19 +250,26 @@ def _strip_citations(text: str) -> tuple[str, list[dict[str, str]]]:
 
     In both cases the marker is replaced in the displayed text by a `[N]`
     reference number that matches the position of the citation in the
-    returned list. Repeat citations of the same `id` reuse the same number,
-    so the final list is deduplicated.
+    returned list. Repeat citations of the same `id` reuse the same number;
+    each of their claim phrasings is appended to that entry's `claims`
+    list so the SOURCES_REACTION listing can show every place the source
+    was used.
+
+    Returned shape: ``[{"id": str, "claims": [str, ...]}, ...]``.
     """
-    citations: list[dict[str, str]] = []
+    citations: list[dict] = []
     id_to_index: dict[str, int] = {}
 
     def _ref(citation_id: str, claim: str) -> str:
         existing = id_to_index.get(citation_id)
         if existing is not None:
+            entry = citations[existing - 1]
+            if claim and claim not in entry["claims"]:
+                entry["claims"].append(claim)
             return f"[{existing}]"
         idx = len(citations) + 1
         id_to_index[citation_id] = idx
-        citations.append({"id": citation_id, "claim": claim})
+        citations.append({"id": citation_id, "claims": [claim] if claim else []})
         return f"[{idx}]"
 
     def _wrapped(m: re.Match) -> str:
