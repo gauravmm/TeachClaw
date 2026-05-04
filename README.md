@@ -2,9 +2,9 @@
 
 ![benchclaw](benchclaw.png)
 
-An ultra-lightweight personal AI assistant. Connects one or more chat channels (Telegram, WhatsApp, Email) to an LLM agent via a fully async message bus — the agent can receive and process new user messages while tools are still running in the background.
+An ultra-lightweight personal AI assistant. Connects one or more chat channels (Telegram, Email) to an LLM agent via a fully async message bus — the agent can receive and process new user messages while tools are still running in the background.
 
-Built on nanobot but essentially a rewrite, focused on:
+Focused on:
 
 - Consistent architecture with less dead code
 - Asynchronous tool use — the LLM can receive messages while tools are running

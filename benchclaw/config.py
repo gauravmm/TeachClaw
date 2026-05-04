@@ -15,7 +15,6 @@ from benchclaw.agent.tools.web import WebSearchConfig
 from benchclaw.channels.claude_code import ClaudeCodeConfig
 from benchclaw.channels.smtp_email import EmailConfig
 from benchclaw.channels.telegrm import TelegramConfig
-from benchclaw.channels.whatsapp.channel import WhatsAppConfig
 
 _DEFAULT_ELIDE_TOOLS: tuple[str, ...] = (
     "search",
@@ -121,7 +120,6 @@ class ChannelConfigs(BaseModel):
     claude_code: ClaudeCodeConfig | None = None
     email: EmailConfig | None = None
     telegram: TelegramConfig | None = None
-    whatsapp: WhatsAppConfig | None = None
 
     def __iter__(self) -> Iterator[tuple[str, BaseModel]]:
         for name in type(self).model_fields:

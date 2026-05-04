@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from pathlib import Path
 
@@ -11,7 +10,6 @@ from benchclaw.agent.tools.base import ToolContext
 from benchclaw.agent.tools.media import AnnotateMediaTool, ReadMediaTool, SendMediaTool
 from benchclaw.bus import MessageAddress, MessageBus, OutboundMessage
 from benchclaw.channels.telegrm import TelegramChannel, TelegramConfig
-from benchclaw.channels.whatsapp import WhatsAppChannel, WhatsAppConfig
 from benchclaw.media import MediaRepository
 
 PNG_1X1 = (
@@ -192,97 +190,3 @@ async def test_telegram_send_photo_uses_media(tmp_path: Path):
     assert bot.sent_photo["chat_id"] == 123
     assert bot.sent_photo["caption"] == "caption"
     assert bot.sent_text is None
-
-
-class _FakeWS:
-    def __init__(self) -> None:
-        self.payloads: list[str] = []
-
-    async def send(self, payload: str) -> None:
-        self.payloads.append(payload)
-
-
-@pytest.mark.asyncio
-async def test_whatsapp_send_serializes_image_payload(tmp_path: Path):
-    image = tmp_path / "media" / "out.png"
-    _write_png(image)
-    channel = WhatsAppChannel(WhatsAppConfig(), MessageBus(), media_repo=None)
-    channel._ws = _FakeWS()
-    channel._connected = True
-
-    await channel.send(
-        OutboundMessage(
-            address=MessageAddress("whatsapp", "123@s.whatsapp.net"),
-            content="caption",
-            media=[str(image)],
-        )
-    )
-
-    [payload] = channel._ws.payloads
-    parsed = json.loads(payload)
-    assert parsed["type"] == "send"
-    assert parsed["to"] == "123@s.whatsapp.net"
-    assert parsed["text"] == "caption"
-    assert parsed["imageMimeType"] == "image/png"
-    assert isinstance(parsed["imageBase64"], str)
-
-
-@pytest.mark.asyncio
-async def test_whatsapp_send_normalizes_bare_chat_id(tmp_path: Path):
-    image = tmp_path / "media" / "out.png"
-    _write_png(image)
-    channel = WhatsAppChannel(WhatsAppConfig(), MessageBus(), media_repo=None)
-    channel._ws = _FakeWS()
-    channel._connected = True
-
-    await channel.send(
-        OutboundMessage(
-            address=MessageAddress("whatsapp", "123"),
-            content="caption",
-            media=[str(image)],
-        )
-    )
-
-    [payload] = channel._ws.payloads
-    parsed = json.loads(payload)
-    assert parsed["to"] == "123@s.whatsapp.net"
-
-
-@pytest.mark.asyncio
-async def test_whatsapp_send_preserves_lid_chat_id(tmp_path: Path):
-    image = tmp_path / "media" / "out.png"
-    _write_png(image)
-    channel = WhatsAppChannel(WhatsAppConfig(), MessageBus(), media_repo=None)
-    channel._ws = _FakeWS()
-    channel._connected = True
-
-    await channel.send(
-        OutboundMessage(
-            address=MessageAddress("whatsapp", "222355137806442@lid"),
-            content="caption",
-            media=[str(image)],
-        )
-    )
-
-    [payload] = channel._ws.payloads
-    parsed = json.loads(payload)
-    assert parsed["to"] == "222355137806442@lid"
-
-
-@pytest.mark.asyncio
-async def test_whatsapp_inbound_preserves_direct_chat_id(tmp_path: Path):
-    bus = MessageBus()
-    channel = WhatsAppChannel(WhatsAppConfig(), bus, media_repo=None)
-    payload = {
-        "type": "message",
-        "id": "m-direct",
-        "chatId": "222355137806442@lid",
-        "content": "hello",
-        "timestamp": 1_700_000_060,
-        "isGroup": False,
-    }
-
-    await channel._handle_bridge_message(json.dumps(payload))
-
-    msg = await bus.consume_inbound(address=MessageAddress("whatsapp", "222355137806442@lid"))
-    assert msg.address == MessageAddress("whatsapp", "222355137806442@lid")

@@ -120,7 +120,7 @@ def test_resolve_file_rejects_non_media_paths(tmp_path: Path):
 
 def test_set_caption_updates_user_metadata(tmp_path: Path):
     repo = MediaRepository(tmp_path)
-    addr = _addr("whatsapp", "555")
+    addr = _addr("telegram", "555")
     path = repo.register(
         addr,
         sender_id="555",
@@ -181,7 +181,7 @@ def test_build_media_blocks_skips_missing_files(tmp_path: Path):
 
 def test_serial_rebuilt_after_reload(tmp_path: Path):
     repo = MediaRepository(tmp_path)
-    addr = _addr("whatsapp", "555")
+    addr = _addr("telegram", "555")
     ts = datetime(2026, 3, 10, 14, 23, 0)
 
     p1 = repo.register(
@@ -204,7 +204,7 @@ def test_purge_old_only_removes_old_registered_media(tmp_path: Path):
     from benchclaw.utils import now_aware
 
     repo = MediaRepository(tmp_path, max_age_days=30)
-    addr = _addr("whatsapp", "555")
+    addr = _addr("telegram", "555")
     now = now_aware()
 
     old = repo.register(

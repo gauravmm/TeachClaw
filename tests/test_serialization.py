@@ -32,7 +32,7 @@ def test_message_address_from_string():
 
 
 def test_message_address_from_string_roundtrip():
-    addr = MessageAddress(channel="whatsapp", chat_id="456@s.whatsapp.net")
+    addr = MessageAddress(channel="email", chat_id="alice@example.com")
     assert MessageAddress.from_string(str(addr)) == addr
 
 
@@ -187,7 +187,7 @@ def test_session_describe_current_session_prefers_sender_label() -> None:
 
 
 def test_session_describe_current_session_handles_group_chats() -> None:
-    session = Session(addr=MessageAddress(channel="whatsapp", chat_id="group-1"))
+    session = Session(addr=MessageAddress(channel="telegram", chat_id="group-1"))
     session.append(
         UserEvent(
             content="hello",
@@ -196,7 +196,7 @@ def test_session_describe_current_session_handles_group_chats() -> None:
         )
     )
 
-    assert session.describe_current_session() == "WhatsApp group chat (recent sender: Alice)"
+    assert session.describe_current_session() == "Telegram group chat (recent sender: Alice)"
 
 
 # ---------------------------------------------------------------------------

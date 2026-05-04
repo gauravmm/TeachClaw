@@ -2,7 +2,7 @@
 
 Today the entire citation system — parsing, dedup, kb-record extraction,
 TTL-tombstoned per-message store, and HTML rendering — lives inside
-`benchclaw/channels/telegrm.py`. WhatsApp, Claude Code, and SMTP-email
+`benchclaw/channels/telegrm.py`. Claude Code and SMTP-email
 channels see `<citation id="…">…</citation>` markup pass straight through
 to the user as raw text. This spec carves the channel-agnostic logic out
 into a `benchclaw/citations/` package so any channel can light up the
@@ -45,7 +45,7 @@ Channel-specific concerns also tangled in:
 
 ## Problems
 
-1. **Three channels leak markup.** WhatsApp, Claude Code, and email all
+1. **Two channels leak markup.** Claude Code and email both
    send messages with raw `<citation>` text visible to the user. There's
    no way for those channels to enable the citation surface without
    copy-pasting ~250 lines from `telegrm.py`.
@@ -208,10 +208,6 @@ For other channels, the wiring becomes:
   `Message-ID` header. Trigger could be a reply with `[sources]` in the
   subject. Render with `MARKDOWN` (or HTML email if we want clickable
   links in the email body).
-- **WhatsApp**: similar to Telegram, but WhatsApp's reaction support
-  through the bridge is more limited. At minimum, `strip_citations`
-  alone fixes the markup-leak bug even without a reaction surface.
-
 ## Migration plan
 
 Two commits to keep the diff reviewable:

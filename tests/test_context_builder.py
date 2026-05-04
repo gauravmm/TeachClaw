@@ -28,7 +28,7 @@ class _DummyTool:
 def test_build_system_prompt_escapes_session_label(tmp_path: Path) -> None:
     prompt = build_system_prompt(
         tmp_path,
-        channel="whatsapp",
+        channel="telegram",
         chat_id="123&456",
         session_label='Alice "A" & Bob',
     )

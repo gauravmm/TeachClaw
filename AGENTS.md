@@ -1,6 +1,6 @@
 # benchclaw — Claude Code Guide
 
-benchclaw is an ultra-lightweight personal AI assistant. It connects one or more chat channels (Telegram, WhatsApp, Email, …) to an LLM agent via an async message bus.
+benchclaw is an ultra-lightweight personal AI assistant. It connects one or more chat channels (Telegram, Email, …) to an LLM agent via an async message bus.
 
 ## Package Layout
 
@@ -26,14 +26,12 @@ benchclaw/
     base.py          ChannelConfig, BaseChannel, register_channel()
     manager.py       ChannelManager: owns channel tasks + outbound dispatchers
     telegrm.py       Telegram
-    whatsapp.py      WhatsApp (requires bridge/)
     smtp_email.py    SMTP email
   config.py          Config (pydantic_settings), ConfigManager (YAML load/save)
   providers/         LLM provider registry; litellm_provider.py wraps LiteLLM
   session.py         SessionManager: per-address JSONL conversation history
   __main__.py        Entry point
 
-bridge/              Node.js WhatsApp bridge (@whiskeysockets/baileys)
 config/              Runtime config (config/config.yaml)
 ```
 
@@ -107,7 +105,6 @@ Each platform lives in `benchclaw/channels/<name>.py`:
 
 ```bash
 uv run benchclaw          # start all configured channels + agent
-python -m benchclaw.channels.whatsapp [ws://localhost:3001] [chat_id]  # test WhatsApp bridge
 ```
 
 Config file: `config/config.yaml` (created automatically on first run with defaults).
