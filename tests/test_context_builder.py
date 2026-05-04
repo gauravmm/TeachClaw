@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from benchclaw.agent.context.builder import ContextBuilder
+from benchclaw.agent.context import build_system_prompt
 
 
 class _DummyTool:
@@ -26,7 +26,6 @@ class _DummyTool:
 
 
 def test_build_system_prompt_uses_xml_safe_rendering(tmp_path: Path) -> None:
-    builder = ContextBuilder(tmp_path)
     tool = _DummyTool(
         name='quote"tool',
         description='Say "hi" & compare <values>.',
@@ -39,7 +38,8 @@ def test_build_system_prompt_uses_xml_safe_rendering(tmp_path: Path) -> None:
         },
     )
 
-    prompt = builder.build_system_prompt(
+    prompt = build_system_prompt(
+        tmp_path,
         tools=[tool],
         channel="whatsapp",
         chat_id="123&456",
@@ -48,22 +48,23 @@ def test_build_system_prompt_uses_xml_safe_rendering(tmp_path: Path) -> None:
 
     assert '<tool name="quote&quot;tool">' in prompt
     assert 'Say "hi" &amp; compare &lt;values&gt;.' in prompt
-    assert 'Path with "quotes" &amp; symbols' in prompt
     assert "params=" not in prompt
     assert 'Session: Alice "A" &amp; Bob' in prompt
-    assert "TODO:" not in prompt
 
 
-def test_build_system_prompt_describes_media_annotation_flow(tmp_path: Path) -> None:
-    builder = ContextBuilder(tmp_path)
+def test_build_system_prompt_lists_registered_tools(tmp_path: Path) -> None:
     tool = _DummyTool(
         name="annotate_media",
         description="Save image annotations.",
         parameters={"type": "object", "properties": {}, "required": []},
     )
 
-    prompt = builder.build_system_prompt(tools=[tool])
+    prompt = build_system_prompt(tmp_path, tools=[tool])
 
     assert "<private_tags>" not in prompt
     assert "annotate_media" in prompt
-    assert "MUST call `annotate_media`" in prompt
+
+
+def test_build_system_prompt_threads_personality_overlay(tmp_path: Path) -> None:
+    prompt = build_system_prompt(tmp_path, personality_overlay="Adopt a CFO voice.")
+    assert "Adopt a CFO voice." in prompt

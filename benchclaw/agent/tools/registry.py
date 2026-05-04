@@ -80,10 +80,17 @@ class ToolRegistry:
         if not tool:
             return f"Error: Tool '{name}' not found"
         try:
-            errors = tool.validate_params(params)
-            if errors:
-                return f"Error: Invalid parameters for tool '{name}': " + "; ".join(errors)
-            return await tool.execute(ctx, **params)
+            from pydantic import ValidationError
+
+            try:
+                validated = tool.Params.model_validate(params)
+            except ValidationError as e:
+                summary = "; ".join(
+                    f"{'.'.join(str(p) for p in err['loc']) or '<root>'}: {err['msg']}"
+                    for err in e.errors()
+                )
+                return f"Error: Invalid parameters for tool '{name}': {summary}"
+            return await tool.execute(ctx, **validated.model_dump(exclude_none=False))
         except Exception as e:
             return f"Error executing {name}: {str(e)}"
 

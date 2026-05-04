@@ -4,7 +4,9 @@ from abc import abstractmethod
 from asyncio import Task
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
+
+from pydantic import BaseModel
 
 from benchclaw.bus import MessageAddress, MessageBus, ToolResult
 
@@ -45,14 +47,22 @@ class ToolContext:
     write_roots: tuple[Path, ...] = ()
 
 
+class _NoParams(BaseModel):
+    """Default Params for tools that take no arguments."""
+
+
 class Tool:
     """
     Abstract base class for agent tools.
 
-    Tools are capabilities that the agent can use to interact with
-    the environment, such as reading files, executing commands, etc.
+    Subclasses declare their argument schema by overriding ``Params`` with a
+    ``pydantic.BaseModel``. The class derives ``parameters`` (the OpenAI
+    tool-call JSON-schema dict) and validates incoming arguments against it
+    in ``ToolRegistry.execute``. ``Tool.execute`` is then called with the
+    validated kwargs.
     """
 
+    Params: ClassVar[type[BaseModel]] = _NoParams
     _task: Task | None = None
 
     @classmethod
@@ -72,35 +82,27 @@ class Tool:
         return None
 
     @property
-    @abstractmethod
     def parameters(self) -> dict[str, Any]:
-        """JSON Schema for tool parameters."""
-        pass
+        """JSON Schema for tool parameters, derived from ``cls.Params``.
+
+        Pydantic-internal keys (``title``, ``$defs``) are stripped so the
+        schema matches the OpenAI tool-call shape directly.
+        """
+        schema = self.Params.model_json_schema()
+        schema.pop("title", None)
+        for prop in (schema.get("properties") or {}).values():
+            if isinstance(prop, dict):
+                prop.pop("title", None)
+        return schema
 
     @abstractmethod
     async def execute(self, ctx: "ToolContext", **kwargs: Any) -> ToolResult:
-        """
-        Execute the tool with given parameters.
-
-        Args:
-            ctx: Runtime context including session address and bus.
-            **kwargs: Tool-specific parameters.
-
-        Returns:
-            String result of the tool execution.
-        """
+        """Execute the tool with validated parameters."""
         pass
 
     async def background(self, ctx: "ToolContext") -> None:
         """Optional long-running coroutine started by ToolRegistry.__aenter__. No-op by default."""
         pass
-
-    def validate_params(self, params: dict[str, Any]) -> list[str]:
-        """Validate tool parameters against JSON schema. Returns error list (empty if valid)."""
-        schema = self.parameters or {}
-        if schema.get("type", "object") != "object":
-            raise ValueError(f"Schema must be object type, got {schema.get('type')!r}")
-        return _validate_schema(params, {**schema, "type": "object"}, "")
 
     def to_schema(self) -> dict[str, Any]:
         """Convert tool to OpenAI function schema format."""
@@ -112,45 +114,3 @@ class Tool:
                 "parameters": self.parameters,
             },
         }
-
-
-_TYPE_MAP = {
-    "string": str,
-    "integer": int,
-    "number": (int, float),
-    "boolean": bool,
-    "array": list,
-    "object": dict,
-}
-
-
-def _validate_schema(val: Any, schema: dict[str, Any], label: str = "") -> list[str]:
-    t = schema.get("type")
-    if t in _TYPE_MAP and not isinstance(val, _TYPE_MAP[t]):
-        return [f"{label} should be {t}"]
-
-    errors = []
-    if "enum" in schema and val not in schema["enum"]:
-        errors.append(f"{label} must be one of {schema['enum']}")
-    elif t in ("integer", "number"):
-        if "minimum" in schema and val < schema["minimum"]:
-            errors.append(f"{label} must be >= {schema['minimum']}")
-        if "maximum" in schema and val > schema["maximum"]:
-            errors.append(f"{label} must be <= {schema['maximum']}")
-    elif t == "string":
-        if "minLength" in schema and len(val) < schema["minLength"]:
-            errors.append(f"{label} must be at least {schema['minLength']} chars")
-        if "maxLength" in schema and len(val) > schema["maxLength"]:
-            errors.append(f"{label} must be at most {schema['maxLength']} chars")
-    elif t == "object":
-        for k in schema.get("required", []):
-            if k not in val:
-                errors.append(f"missing required {label + '.' + k}")
-        props = schema.get("properties", {})
-        for k, v in val.items():
-            if k in props:
-                errors.extend(_validate_schema(v, props[k], label + "." + k))
-    if t == "array" and "items" in schema:
-        for i, item in enumerate(val):
-            errors.extend(_validate_schema(item, schema["items"], f"{label}[{i}]"))
-    return errors

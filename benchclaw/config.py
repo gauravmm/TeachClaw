@@ -8,7 +8,6 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings
 
-from benchclaw.agent.tools.builtins import TOOL_CONFIG_TYPES
 from benchclaw.agent.tools.mcp_manager import MCPServerConfig
 from benchclaw.agent.tools.shell import ExecToolConfig
 from benchclaw.agent.tools.web import WebSearchConfig
@@ -45,7 +44,6 @@ class AgentConfig(BaseModel):
     max_tokens: int = 2048
     temperature: float = 0.7
     max_tool_iterations: int = 20
-    memory_window: int = 50
     context_window: int = 24000
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
 
@@ -124,8 +122,7 @@ class ConfigManager:
         if self._path.exists():
             try:
                 with open(self._path) as f:
-                    data = yaml.safe_load(f)
-                data = _migrate_config(data)
+                    data = yaml.safe_load(f) or {}
                 self.config = Config.model_validate(data)
                 return self.config
             except (yaml.YAMLError, ValueError) as e:
@@ -142,24 +139,3 @@ class ConfigManager:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with open(self._path, "w") as f:
                 yaml.dump(self.config.model_dump(), f, default_flow_style=False, allow_unicode=True)
-
-
-def _migrate_config(data: dict | None) -> dict:
-    """Migrate old config formats to current."""
-    data = data or {}
-
-    channels = dict(data.get("channels") or {})
-    telegram = channels.get("telegram")
-    if isinstance(telegram, dict) and not telegram.get("enabled", True):
-        channels.pop("telegram", None)
-    elif isinstance(telegram, dict):
-        telegram.pop("enabled", None)
-
-    email = channels.get("email")
-    if isinstance(email, dict):
-        email.pop("consent_granted", None)
-
-    tools = dict(data.get("tools") or {})
-    data["channels"] = channels
-    data["tools"] = {name: value for name, value in tools.items() if name in TOOL_CONFIG_TYPES}
-    return data

@@ -15,9 +15,8 @@ from benchclaw.agent.tools.media import (
     SearchMediaTool,
     SendMediaTool,
 )
-from benchclaw.agent.tools.message import MessageTool
-from benchclaw.agent.tools.shell import ExecTool, ExecToolConfig
-from benchclaw.agent.tools.web import WebFetchTool, WebSearchConfig, WebSearchTool
+from benchclaw.agent.tools.shell import ExecTool
+from benchclaw.agent.tools.web import WebFetchTool, WebSearchTool
 
 BUILTIN_TOOLS: tuple[tuple[str, type[Tool]], ...] = (
     ("cron", CronTool),
@@ -30,13 +29,7 @@ BUILTIN_TOOLS: tuple[tuple[str, type[Tool]], ...] = (
     ("annotate_media", AnnotateMediaTool),
     ("send_media", SendMediaTool),
     ("search_media", SearchMediaTool),
-    ("message", MessageTool),
     ("exec", ExecTool),
     ("web_search", WebSearchTool),
     ("web_fetch", WebFetchTool),
 )
-
-TOOL_CONFIG_TYPES = {
-    "exec": ExecToolConfig,
-    "web_search": WebSearchConfig,
-}

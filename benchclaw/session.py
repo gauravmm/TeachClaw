@@ -5,7 +5,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, ClassVar, Literal, Protocol, TypedDict, Unpack
+from typing import Any, ClassVar, Literal
 
 from loguru import logger
 from pathvalidate import sanitize_filename
@@ -22,13 +22,8 @@ EventKind = Literal["user", "assistant", "tool", "system", "summary"]
 @dataclass(frozen=True)
 class RenderOptions:
     include_reasoning: bool = True
-    pending_media_paths: list[str] | None = None
     max_inline_image_url_chars: int | None = None
     elide_tool_names: tuple[str, ...] = ()  # tool names whose past-turn results are elided
-
-
-class MediaRenderer(Protocol):
-    def build_media_blocks(self, paths: list[str]) -> list[dict[str, object]]: ...
 
 
 def _sender_label(metadata: dict[str, Any]) -> str | None:
@@ -141,9 +136,6 @@ class UserEvent(BaseEvent):
     sender_id: str | None = None
     sender_label: str | None = None
 
-    class RenderKwargs(TypedDict, total=False):
-        pending_image_blocks: list[dict[str, object]]
-
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.sender_label is None:
@@ -167,22 +159,15 @@ class UserEvent(BaseEvent):
                 record[key] = value
         return record
 
-    def to_llm_message(self, **kwargs: Unpack[RenderKwargs]) -> dict[str, Any]:
-        text = _render_user_content(
-            self.content,
-            media=self.media,
-            sender=self.sender_label,
-            sent_at=self.timestamp,
-        )
-        pending_image_blocks = kwargs.get("pending_image_blocks")
-        content: str | list[dict[str, object]]
-        if pending_image_blocks:
-            content = [*pending_image_blocks, {"type": "text", "text": text}]
-        else:
-            content = text
+    def to_llm_message(self, **_: Any) -> dict[str, Any]:
         return {
             "role": "user",
-            "content": content,
+            "content": _render_user_content(
+                self.content,
+                media=self.media,
+                sender=self.sender_label,
+                sent_at=self.timestamp,
+            ),
         }
 
 
@@ -194,9 +179,6 @@ class AssistantEvent(BaseEvent):
     metadata: dict[str, Any] = field(default_factory=dict)
     tool_calls: list[dict[str, Any]] | None = None
     reasoning_content: str | None = None
-
-    class RenderKwargs(TypedDict, total=False):
-        include_reasoning: bool
 
     @property
     def kind(self) -> Literal["assistant"]:
@@ -214,9 +196,8 @@ class AssistantEvent(BaseEvent):
                 record[key] = value
         return record
 
-    def to_llm_message(self, **kwargs: Unpack[RenderKwargs]) -> dict[str, Any]:
+    def to_llm_message(self, *, include_reasoning: bool = True, **_: Any) -> dict[str, Any]:
         message: dict[str, Any] = {"role": "assistant", "content": self.content}
-        include_reasoning = kwargs.get("include_reasoning", True)
         if self.tool_calls:
             message["tool_calls"] = self.tool_calls
         if include_reasoning and self.reasoning_content:
@@ -349,37 +330,33 @@ class Session:
     created_at: datetime = field(default_factory=now_aware)
     updated_at: datetime = field(default_factory=now_aware)
     metadata: dict[str, Any] = field(default_factory=dict)
-    compacted_through: int = -1
 
     def __post_init__(self) -> None:
         self.created_at = ensure_aware(self.created_at)
         self.updated_at = ensure_aware(self.updated_at)
 
     @property
-    def messages(self) -> list[dict[str, Any]]:
-        """Compatibility view of persisted events."""
-        return [event.to_record() for event in self.events]
+    def has_summary(self) -> bool:
+        """True iff the first event is a SummaryEvent (i.e. compaction has run)."""
+        return bool(self.events) and isinstance(self.events[0], SummaryEvent)
 
     def append(self, event: ConversationEvent) -> None:
         self.events.append(event)
         self.updated_at = now_aware()
 
     def compact_with_summary(self, summary: str, *, keep_from_index: int = -1) -> None:
-        """Replace conversation history with a SummaryEvent.
+        """Replace conversation history with a SummaryEvent + optional verbatim tail.
 
-        If keep_from_index < 0 (default), every event is replaced. If
-        keep_from_index >= 0, events[:keep_from_index] are summarized and
-        events[keep_from_index:] are kept verbatim after the summary. The
-        typical caller passes the index of the most recent UserEvent so
-        that the user's current question stays in the prompt verbatim and
-        attached media still resolves.
+        If keep_from_index >= 0, ``events[keep_from_index:]`` is preserved after
+        the summary; this is normally the index of the latest UserEvent so the
+        current question stays verbatim and attached media still resolves.
         """
-        if keep_from_index < 0 or keep_from_index >= len(self.events):
-            kept: list[ConversationEvent] = []
-        else:
-            kept = list(self.events[keep_from_index:])
+        kept: list[ConversationEvent] = (
+            list(self.events[keep_from_index:])
+            if 0 <= keep_from_index < len(self.events)
+            else []
+        )
         self.events = [SummaryEvent(content=summary), *kept]
-        self.compacted_through = 0
         self.updated_at = now_aware()
 
     @staticmethod
@@ -387,12 +364,9 @@ class Session:
         event: ConversationEvent,
         *,
         options: RenderOptions,
-        pending_media_blocks: list[dict[str, object]] | None = None,
     ) -> dict[str, object]:
         if isinstance(event, AssistantEvent):
             message = event.to_llm_message(include_reasoning=options.include_reasoning)
-        elif isinstance(event, UserEvent):
-            message = event.to_llm_message(pending_image_blocks=pending_media_blocks or [])
         else:
             message = event.to_llm_message()
         message["content"] = _truncate_inline_images(
@@ -444,28 +418,15 @@ class Session:
             tool_name=event.tool_name,
         )
 
-    def _build_pending_media_blocks(
-        self,
-        media_repo: MediaRenderer | None,
-        options: RenderOptions,
-    ) -> list[dict[str, object]] | None:
-        if not options.pending_media_paths:
-            return None
-        if media_repo is None:
-            return None
-        return media_repo.build_media_blocks(options.pending_media_paths)
-
     def _render_history(
         self,
         history: list[ConversationEvent],
         *,
-        media_repo: MediaRenderer | None = None,
         options: RenderOptions | None = None,
     ) -> list[dict[str, object]]:
         options = options or RenderOptions()
         last_reasoning_idx = self._find_last_reasoning_index(history)
         last_user_idx = self._last_user_index(history)
-        pending_media_blocks = self._build_pending_media_blocks(media_repo, options)
         messages: list[dict[str, object]] = []
         for i, event in enumerate(history):
             rendered_event = self._maybe_elide_tool_event(
@@ -476,10 +437,8 @@ class Session:
                     rendered_event,
                     options=RenderOptions(
                         include_reasoning=options.include_reasoning and i == last_reasoning_idx,
-                        pending_media_paths=None,
                         max_inline_image_url_chars=options.max_inline_image_url_chars,
                     ),
-                    pending_media_blocks=pending_media_blocks if i == len(history) - 1 else None,
                 )
             )
         return messages
@@ -487,43 +446,16 @@ class Session:
     def render_llm_messages(
         self,
         system_prompt: str,
-        media_repo: MediaRenderer | None,
         options: RenderOptions | None = None,
-        *,
-        max_messages: int = 50,
     ) -> list[dict[str, object]]:
-        history = self.get_history_events(max_messages)
         return [
             {"role": "system", "content": system_prompt},
-            *self._render_history(history, media_repo=media_repo, options=options),
+            *self._render_history(list(self.events), options=options),
         ]
 
-    def get_history_events(self, max_messages: int = 50) -> list[ConversationEvent]:
-        """Return the current typed conversation history window."""
-        if self.compacted_through >= 0 and self.events:
-            history = [
-                self.events[self.compacted_through],
-                *self.events[self.compacted_through + 1 :],
-            ]
-        else:
-            history = list(self.events)
-        if max_messages > 0:
-            if self.compacted_through >= 0 and history:
-                summary, recent = history[0], history[1:]
-                recent = recent[-max_messages:]
-                history = [summary, *recent]
-            else:
-                history = history[-max_messages:]
-        return history
-
-    def get_history(self, max_messages: int = 50) -> list[dict[str, Any]]:
-        """Render the current conversation history for the provider."""
-        return self._render_history(self.get_history_events(max_messages))
-
     def clear(self) -> None:
-        """Clear all events and reset the session state."""
+        """Clear all events."""
         self.events = []
-        self.compacted_through = -1
         self.updated_at = now_aware()
 
     def describe_current_session(self) -> str:
@@ -556,7 +488,6 @@ class Session:
             metadata = {}
             created_at = None
             updated_at = None
-            compacted_through = -1
             addr: MessageAddress | None = None
 
             with open(path) as f:
@@ -575,7 +506,6 @@ class Session:
                         updated_at = (
                             _parse_timestamp(data["updated_at"]) if data.get("updated_at") else None
                         )
-                        compacted_through = data.get("compacted_through", -1)
                         if data.get("address"):
                             addr = MessageAddress.from_string(data["address"])
                     else:
@@ -591,7 +521,6 @@ class Session:
                 created_at=created_at or now_aware(),
                 updated_at=updated_at or now_aware(),
                 metadata=metadata,
-                compacted_through=compacted_through,
             )
         except Exception as e:
             logger.warning(f"Failed to load session from {path}: {e}")
@@ -606,7 +535,6 @@ class Session:
                 "created_at": self.created_at.isoformat(timespec="seconds"),
                 "updated_at": self.updated_at.isoformat(timespec="seconds"),
                 "metadata": self.metadata,
-                "compacted_through": self.compacted_through,
             }
             f.write(json.dumps(metadata_line) + "\n")
             for event in self.events:

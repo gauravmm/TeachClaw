@@ -4,9 +4,10 @@ import contextlib
 import uuid
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar, Literal
 
 from loguru import logger
+from pydantic import BaseModel, Field
 
 from benchclaw.agent.tools.base import Tool, ToolContext
 from benchclaw.agent.tools.cron.typesupport import (
@@ -22,6 +23,39 @@ from benchclaw.utils import _parse_timestamp, now_aware
 
 class CronTool(Tool):
     """Tool to schedule reminders and recurring tasks."""
+
+    class Params(BaseModel):
+        action: Literal["add", "list", "remove"] = Field(description="Action to perform")
+        message: str = Field(default="", description="Reminder message (for add)")
+        every_seconds: int | None = Field(
+            default=None, description="Interval in seconds (for recurring tasks)"
+        )
+        cron_expr: str | None = Field(
+            default=None,
+            description="Cron expression like '0 9 * * *' (for scheduled tasks)",
+        )
+        in_sec: int | None = Field(default=None, description="Run once N seconds from now")
+        in_min: int | None = Field(default=None, description="Run once N minutes from now")
+        in_hr: int | None = Field(default=None, description="Run once N hours from now")
+        in_days: int | None = Field(default=None, description="Run once N days from now")
+        at: str | None = Field(
+            default=None,
+            description=(
+                "ISO datetime for one-time execution in local time with timezone offset "
+                "(e.g. '2026-02-12T10:30:00+05:30'). Use the same timezone offset as shown in Startup Time."
+            ),
+        )
+        until_iso: str | None = Field(
+            default=None,
+            description=(
+                "ISO datetime after which a recurring job stops firing and is deleted, "
+                "in local time with timezone offset (e.g. '2026-03-15T18:00:00+05:30'). "
+                "Only applies to every_seconds jobs."
+            ),
+        )
+        job_id: str | None = Field(default=None, description="Job ID (for remove)")
+
+    Params: ClassVar[type[BaseModel]] = Params
 
     @classmethod
     def build(cls, config: None, ctx: ToolContext) -> "CronTool":
@@ -53,42 +87,6 @@ class CronTool(Tool):
             "IMPORTANT: Never expose cron internals to the user. Do not mention job IDs, that a cron job was created or removed, or any scheduling implementation details. "
             "Respond naturally, as if you simply plan to follow up at the agreed time."
         )
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["add", "list", "remove"],
-                    "description": "Action to perform",
-                },
-                "message": {"type": "string", "description": "Reminder message (for add)"},
-                "every_seconds": {
-                    "type": "integer",
-                    "description": "Interval in seconds (for recurring tasks)",
-                },
-                "cron_expr": {
-                    "type": "string",
-                    "description": "Cron expression like '0 9 * * *' (for scheduled tasks)",
-                },
-                "in_sec": {"type": "integer", "description": "Run once N seconds from now"},
-                "in_min": {"type": "integer", "description": "Run once N minutes from now"},
-                "in_hr": {"type": "integer", "description": "Run once N hours from now"},
-                "in_days": {"type": "integer", "description": "Run once N days from now"},
-                "at": {
-                    "type": "string",
-                    "description": "ISO datetime for one-time execution in local time with timezone offset (e.g. '2026-02-12T10:30:00+05:30'). Use the same timezone offset as shown in Startup Time.",
-                },
-                "until_iso": {
-                    "type": "string",
-                    "description": "ISO datetime after which a recurring job stops firing and is deleted, in local time with timezone offset (e.g. '2026-03-15T18:00:00+05:30'). Only applies to every_seconds jobs.",
-                },
-                "job_id": {"type": "string", "description": "Job ID (for remove)"},
-            },
-            "required": ["action"],
-        }
 
     async def _execute_job(self, job: CronJob) -> None:
         """Execute a job: inject a synthetic inbound message to re-invoke the agent."""

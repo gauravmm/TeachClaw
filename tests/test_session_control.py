@@ -13,6 +13,7 @@ from benchclaw.bus import (
     MessageAddress,
     MessageBus,
     SessionControlEvent,
+    ToolCallTrace,
 )
 from benchclaw.config import Config
 from benchclaw.media import MediaRepository
@@ -52,7 +53,7 @@ def test_reset_event_clears_session_and_personality(tmp_path: Path) -> None:
     personalities.write_personality(tmp_path, addr, "skeptical_cfo")
 
     state = _AddressState()
-    state.tool_call_trace = [{"name": "x", "result": "y"}]
+    state.tool_call_trace = [ToolCallTrace(id="x", name="x", arguments={}, result="y")]
     loop._apply_control_event(SessionControlEvent(action="reset"), session, state, addr)
 
     assert session.events == []
@@ -108,12 +109,10 @@ def test_personality_overlay_threaded_into_system_prompt(tmp_path: Path) -> None
 
 
 def test_outbound_message_carries_tool_trace(tmp_path: Path) -> None:
-    loop = _make_loop(tmp_path)
+    _ = _make_loop(tmp_path)
     state = _AddressState()
     state.tool_call_trace = [
-        {"id": "tc1", "name": "search", "arguments": {"q": "x"}, "result": "ok"}
+        ToolCallTrace(id="tc1", name="search", arguments={"q": "x"}, result="ok")
     ]
-    # The actual outbound publish path is exercised in test_agent_loop;
-    # this test guards the trace surface that the channel relies on.
-    assert state.tool_call_trace[0]["name"] == "search"
+    assert state.tool_call_trace[0].name == "search"
     assert AgentLoop._truncate_for_trace("a" * 500).endswith("…")

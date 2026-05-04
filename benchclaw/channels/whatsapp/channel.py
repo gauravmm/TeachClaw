@@ -28,6 +28,7 @@ from benchclaw.channels.whatsapp.bridge import (
     BridgeSentEvent,
     BridgeStatusEvent,
 )
+from benchclaw.media import extension_for_mime
 from benchclaw.media import MediaRepository
 from benchclaw.utils import now_aware, parse_optional_timestamp
 
@@ -251,18 +252,7 @@ class WhatsAppChannel(BaseChannel):
 
         try:
             mime_type = event.mediaType or "application/octet-stream"
-            _MIME_EXT = {
-                "image/jpeg": ".jpg",
-                "image/png": ".png",
-                "image/gif": ".gif",
-                "image/webp": ".webp",
-                "audio/ogg; codecs=opus": ".ogg",
-                "audio/ogg": ".ogg",
-                "audio/mpeg": ".mp3",
-                "audio/mp4": ".m4a",
-                "audio/aac": ".aac",
-            }
-            ext = _MIME_EXT.get(mime_type, ".bin")
+            ext = extension_for_mime(mime_type) or ".bin"
             # Derive broad media_type from the MIME prefix, falling back to the
             # existing metadata value so voice/audio distinction is preserved.
             mime_prefix = mime_type.split("/")[0]

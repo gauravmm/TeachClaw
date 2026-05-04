@@ -5,7 +5,8 @@ Do not generate tabular output. Use prose or lists instead.
 
 Time: {{ now }}
 Workspace: {{ workspace_path }}
-{% if channel and chat_id %}Session: {{ channel | xml_text }} / {{ chat_id | xml_text }}
+{% if session_label %}Session: {{ session_label | xml_text }}
+{% elif channel and chat_id %}Session: {{ channel | xml_text }} / {{ chat_id | xml_text }}
 {% endif %}{% if storage_path %}Your storage (relative paths resolve here): {{ storage_path | xml_text }}
 {% endif %}
 

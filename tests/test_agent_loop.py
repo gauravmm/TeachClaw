@@ -164,7 +164,6 @@ def test_build_llm_messages_keeps_only_latest_reasoning(tmp_path: Path) -> None:
 
     messages = session.render_llm_messages(
         "system prompt",
-        MediaRepository(tmp_path),
         RenderOptions(),
     )
     assistant_messages = [message for message in messages if message["role"] == "assistant"]
@@ -188,7 +187,6 @@ def test_build_llm_messages_redacts_image_blocks_in_debug_profile(tmp_path: Path
 
     messages = session.render_llm_messages(
         "system prompt",
-        MediaRepository(tmp_path),
         RenderOptions(max_inline_image_url_chars=40),
     )
     tool_message = next(message for message in messages if message["role"] == "tool")
@@ -211,9 +209,7 @@ def test_render_llm_messages_keeps_full_image_blocks_for_provider(tmp_path: Path
         )
     )
 
-    messages = session.render_llm_messages(
-        "system prompt", MediaRepository(tmp_path), RenderOptions()
-    )
+    messages = session.render_llm_messages("system prompt", RenderOptions())
     tool_message = next(message for message in messages if message["role"] == "tool")
 
     assert tool_message["content"] == [
@@ -380,9 +376,7 @@ def test_render_options_elide_replaces_old_retrieval_results() -> None:
 
     rendered = session.render_llm_messages(
         "system",
-        media_repo=None,
         options=RenderOptions(elide_tool_names=("search",)),
-        max_messages=50,
     )
 
     tool_messages = [m for m in rendered if m["role"] == "tool"]

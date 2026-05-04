@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
 from benchclaw.bus import InboundMessage, MessageAddress, MessageBus, OutboundMessage
 from benchclaw.channels.attention import AttentionPolicy, InboundAttentionFilter
 from benchclaw.channels.base import BaseChannel, ChannelConfig
-from benchclaw.channels.telegrm import TelegramChannel, TelegramConfig
 from benchclaw.channels.whatsapp import WhatsAppChannel, WhatsAppConfig
 from benchclaw.channels.whatsapp.address import WhatsAppId
 from benchclaw.channels.whatsapp.bridge import BridgeMessageEvent

@@ -4,9 +4,9 @@ import asyncio
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from benchclaw.agent.tools.base import Tool, ToolContext
 
@@ -20,6 +20,14 @@ class ExecToolConfig(BaseModel):
 
 class ExecTool(Tool):
     """Tool to execute shell commands."""
+
+    class Params(BaseModel):
+        command: str = Field(description="The shell command to execute")
+        working_dir: str | None = Field(
+            default=None, description="Optional working directory for the command"
+        )
+
+    Params: ClassVar[type[BaseModel]] = Params
 
     @classmethod
     def build(cls, config: "ExecToolConfig | None", ctx: ToolContext) -> "ExecTool":
@@ -65,20 +73,6 @@ class ExecTool(Tool):
             "Dangerous patterns (e.g. `rm -rf`, disk writes) are blocked; subagents are restricted to the workspace directory; output is truncated at 10,000 characters. "
             "Example: `{'command': 'git log --oneline -5', 'working_dir': '/home/user/project'}`."
         )
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "command": {"type": "string", "description": "The shell command to execute"},
-                "working_dir": {
-                    "type": "string",
-                    "description": "Optional working directory for the command",
-                },
-            },
-            "required": ["command"],
-        }
 
     async def execute(
         self, ctx: ToolContext, command: str, working_dir: str | None = None, **kwargs: Any

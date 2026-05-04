@@ -86,6 +86,20 @@ class SystemMessageEvent:
 
 
 @dataclass
+class ToolCallTrace:
+    """One dispatched tool call, optionally with its captured result.
+
+    Channels record these via ``OutboundMessage.metadata['tool_calls']`` so a
+    🔍 reaction can replay what the agent actually did for that turn.
+    """
+
+    id: str
+    name: str
+    arguments: dict[str, object]
+    result: str | None = None
+
+
+@dataclass
 class SessionControlEvent:
     """Out-of-band channel directive to the agent loop for one address.
 

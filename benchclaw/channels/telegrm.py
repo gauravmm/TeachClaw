@@ -57,10 +57,11 @@ from benchclaw.bus import (
     MessageBus,
     OutboundMessage,
     SessionControlEvent,
+    ToolCallTrace,
     TypingEvent,
 )
 from benchclaw.channels.base import BaseChannel, ChannelConfig
-from benchclaw.media import MediaRepository
+from benchclaw.media import MediaRepository, extension_for_mime
 from benchclaw.rendering import mermaid as mermaid_renderer
 
 
@@ -98,7 +99,7 @@ class TelegramConfig(ChannelConfig):
 @dataclass
 class _MessageMapEntry:
     citations: list[dict[str, str]]  # [{"id": "...", "claim": "..."}, ...]
-    tool_calls: list[dict[str, Any]]
+    tool_calls: list[ToolCallTrace]
     created_at: float
 
 
@@ -708,7 +709,7 @@ class TelegramChannel(BaseChannel):
                     file = await self._app.bot.get_file(media_file.file_id)
                     mime_type = getattr(media_file, "mime_type", None)
                     size_bytes = getattr(media_file, "file_size", None)
-                    ext = self._get_extension(media_type, mime_type)
+                    ext = extension_for_mime(mime_type)
                     file_path = self.media_repo.register(
                         MessageAddress(self.name, str(chat.id)),
                         sender_id=sender_id,
@@ -791,7 +792,8 @@ class TelegramChannel(BaseChannel):
 
         st = self._user_state(chat_id)
         text, citations = _strip_citations(msg.content)
-        tool_calls = list(msg.metadata.get("tool_calls") or []) if msg.metadata else []
+        raw_tool_calls = msg.metadata.get("tool_calls") if msg.metadata else None
+        tool_calls: list[ToolCallTrace] = list(raw_tool_calls or [])
 
         # Outbound media (e.g. send_media tool) bypasses mermaid routing.
         if msg.media:
@@ -806,7 +808,7 @@ class TelegramChannel(BaseChannel):
         st: _UserState,
         text: str,
         citations: list[dict[str, str]],
-        tool_calls: list[dict[str, Any]],
+        tool_calls: list[ToolCallTrace],
     ) -> None:
         blocks = mermaid_renderer.extract_blocks(text)
         # Build a list of segments: ('text', str) or ('mmd', RenderedDiagram)
@@ -897,7 +899,7 @@ class TelegramChannel(BaseChannel):
         chat_id: int,
         st: _UserState,
         citations: list[dict[str, str]],
-        tool_calls: list[dict[str, Any]],
+        tool_calls: list[ToolCallTrace],
     ) -> None:
         assert self._app
         try:
@@ -931,7 +933,7 @@ class TelegramChannel(BaseChannel):
         st: _UserState,
         message_id: int,
         citations: list[dict[str, str]],
-        tool_calls: list[dict[str, Any]],
+        tool_calls: list[ToolCallTrace],
     ) -> None:
         now = time.time()
         ttl = self.config.message_map_ttl_seconds
@@ -1052,34 +1054,14 @@ class TelegramChannel(BaseChannel):
             return
         lines: list[str] = []
         for tc in entry.tool_calls[:10]:
-            name = tc.get("name", "?")
-            args = tc.get("arguments", {})
-            args_text = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:3])
+            args_text = ", ".join(f"{k}={v!r}" for k, v in list(tc.arguments.items())[:3])
             if len(args_text) > 120:
                 args_text = args_text[:119] + "…"
-            result = tc.get("result")
-            result_text = "(pending)" if result is None else str(result)[:120]
-            lines.append(f"• {name}({args_text}) → {result_text}")
+            result_text = "(pending)" if tc.result is None else tc.result[:120]
+            lines.append(f"• {tc.name}({args_text}) → {result_text}")
         await self._safe_send_text(chat_id, "\n".join(lines))
 
     # ---- misc -------------------------------------------------------------
 
     async def _on_error(self, _update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error(f"Telegram error: {context.error}")
-
-    def _get_extension(self, media_type: str | None, mime_type: str | None) -> str:
-        if media_type is None:
-            return ""
-        if mime_type:
-            ext_map = {
-                "image/jpeg": ".jpg",
-                "image/png": ".png",
-                "image/gif": ".gif",
-                "audio/ogg": ".ogg",
-                "audio/mpeg": ".mp3",
-                "audio/mp4": ".m4a",
-            }
-            if mime_type in ext_map:
-                return ext_map[mime_type]
-        type_map = {"image": ".jpg", "voice": ".ogg", "audio": ".mp3", "file": ""}
-        return type_map.get(media_type, "")

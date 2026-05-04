@@ -17,6 +17,23 @@ from benchclaw.bus import MessageAddress
 from benchclaw.utils import _parse_timestamp, ensure_aware, now_aware
 
 
+def extension_for_mime(mime_type: str | None) -> str:
+    """Return a leading-dot file extension inferred from a MIME type.
+
+    Strips any codec parameters (e.g. ``audio/ogg; codecs=opus`` → ``audio/ogg``)
+    before lookup. Returns the empty string when the MIME type is missing or
+    unrecognized; callers should fall back to whatever channel-specific naming
+    they already use in that case.
+    """
+    if not mime_type:
+        return ""
+    head = mime_type.split(";", 1)[0].strip()
+    t = filetype.get_type(mime=head)
+    if t is None or not t.extension:
+        return ""
+    return f".{t.extension}"
+
+
 class MediaEntry(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

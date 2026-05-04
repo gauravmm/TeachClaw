@@ -9,7 +9,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from benchclaw.agent.context import ContextBuilder
+from benchclaw.agent.context import build_system_prompt
 from benchclaw.agent.tools.base import ToolContext
 from benchclaw.agent.tools.mcp_manager import MCPManager
 from benchclaw.agent.tools.registry import ToolRegistry
@@ -21,6 +21,7 @@ from benchclaw.bus import (
     OutboundMessage,
     SessionControlEvent,
     SystemMessageEvent,
+    ToolCallTrace,
     ToolResultEvent,
     TypingEvent,
 )
@@ -64,10 +65,8 @@ class _AddressState:
     pending_system_events: list[str] = field(default_factory=list)
     pending_media: list[str] = field(default_factory=list)
     # Tool calls dispatched since the most recent user message, in order.
-    # Each entry: {"name": str, "arguments": dict, "result": str}.
-    # The channel may attach this to outgoing messages so a 🔍 reaction can
-    # surface a tool-call trace. Reset whenever a new user message arrives.
-    tool_call_trace: list[dict[str, object]] = field(default_factory=list)
+    # Reset whenever a new user message arrives.
+    tool_call_trace: list[ToolCallTrace] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -146,7 +145,6 @@ class AgentLoop:
         self.debug_dump_path = debug_dump_path
         self.media_repo = media_repo
 
-        self.context = ContextBuilder(config.workspace_path)
         self.sessions = SessionManager(config.workspace_path / "sessions")
 
         master_ctx = ToolContext(
@@ -243,17 +241,11 @@ class AgentLoop:
     def _input_budget(self) -> int:
         return max(self.config.context_window - self.config.max_tokens, 1)
 
-    def _build_render_options(
-        self,
-        pending_media: list[str] | None = None,
-    ) -> RenderOptions:
+    def _render_options(self) -> RenderOptions:
         elide_tools: tuple[str, ...] = ()
         if self.config.compaction.elide_chunks_after_turn:
             elide_tools = tuple(self.config.compaction.elide_tool_names)
-        return RenderOptions(
-            pending_media_paths=pending_media or None,
-            elide_tool_names=elide_tools,
-        )
+        return RenderOptions(elide_tool_names=elide_tools)
 
     def _build_prompt_and_messages(
         self,
@@ -263,45 +255,64 @@ class AgentLoop:
     ) -> list[dict[str, object]]:
         storage_root = storage_layout.storage_root(self.workspace_path, addr)
         persona = personalities.read_personality(self.workspace_path, addr)
-        prompt = self.context.build_system_prompt(
-            self.tools.values(),
-            addr.channel,
-            addr.chat_id,
-            session.describe_current_session(),
+        prompt = build_system_prompt(
+            self.workspace_path,
+            tools=self.tools.values(),
+            channel=addr.channel,
+            chat_id=addr.chat_id,
+            session_label=session.describe_current_session(),
             chunk_elision_active=self.config.compaction.elide_chunks_after_turn,
             profile_text=storage_layout.read_profile(self.workspace_path, addr),
             storage_path=str(storage_root),
             personality_overlay=persona.overlay,
         )
-        messages = session.render_llm_messages(
-            prompt,
-            self.media_repo,
-            self._build_render_options(pending_media),
-            max_messages=self.config.memory_window,
-        )
-        return self._inject_storage_listing(messages, addr)
-
-    def _inject_storage_listing(
-        self,
-        messages: list[dict[str, object]],
-        addr: MessageAddress,
-    ) -> list[dict[str, object]]:
-        """Insert a synthetic storage listing right before the latest user message.
-
-        Living in the tail keeps the cacheable system-prompt prefix stable
-        across writes — see spec/TODO.md storage-layout notes.
-        """
+        messages = session.render_llm_messages(prompt, self._render_options())
         listing = storage_layout.listing_for_user(self.workspace_path, addr)
-        if not listing:
+        media_blocks = (
+            self.media_repo.build_media_blocks(pending_media)
+            if (pending_media and self.media_repo)
+            else None
+        )
+        return self._inject_tail(messages, listing=listing, media_blocks=media_blocks)
+
+    @staticmethod
+    def _inject_tail(
+        messages: list[dict[str, object]],
+        *,
+        listing: str | None,
+        media_blocks: list[dict[str, object]] | None,
+    ) -> list[dict[str, object]]:
+        """Attach storage listing and pending media blocks to the latest user turn.
+
+        The listing goes in as a synthetic user message right before the most
+        recent user turn so the cacheable system-prompt prefix stays stable.
+        Media blocks are prepended to the latest user message's content,
+        promoting plain text into a content-block list when needed.
+        """
+        if not listing and not media_blocks:
             return messages
-        listing_message: dict[str, object] = {
-            "role": "user",
-            "content": f"<storage_listing>\n{listing}\n</storage_listing>",
-        }
-        for i in range(len(messages) - 1, -1, -1):
-            if messages[i].get("role") == "user":
-                return [*messages[:i], listing_message, *messages[i:]]
-        return messages
+        last_user_idx = next(
+            (i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"),
+            None,
+        )
+        if last_user_idx is None:
+            return messages
+        out = list(messages)
+        if media_blocks:
+            user_msg = dict(out[last_user_idx])
+            existing = user_msg.get("content", "")
+            if isinstance(existing, list):
+                user_msg["content"] = [*media_blocks, *existing]
+            else:
+                user_msg["content"] = [*media_blocks, {"type": "text", "text": existing}]
+            out[last_user_idx] = user_msg
+        if listing:
+            listing_msg: dict[str, object] = {
+                "role": "user",
+                "content": f"<storage_listing>\n{listing}\n</storage_listing>",
+            }
+            out.insert(last_user_idx, listing_msg)
+        return out
 
     @staticmethod
     def _last_user_event_index(events: list[ConversationEvent]) -> int:
@@ -326,7 +337,7 @@ class AgentLoop:
         # take actions, only to compress.
         history_messages = session._render_history(
             events_to_summarize,
-            options=self._build_render_options(),
+            options=self._render_options(),
         )
         summarize_messages: list[dict[str, object]] = [
             {"role": "system", "content": _SUMMARIZE_SYSTEM_PROMPT},
@@ -439,12 +450,7 @@ class AgentLoop:
                 args_str = json.dumps(tc.arguments, ensure_ascii=False)
                 logger.info(f"Tool call (background): {tc.name}({args_str[:200]})")
                 state.tool_call_trace.append(
-                    {
-                        "id": tc.id,
-                        "name": tc.name,
-                        "arguments": tc.arguments,
-                        "result": None,
-                    }
+                    ToolCallTrace(id=tc.id, name=tc.name, arguments=dict(tc.arguments))
                 )
                 task = asyncio.create_task(
                     self._run_tool_and_post(tc, call_ctx, addr),
@@ -534,8 +540,8 @@ class AgentLoop:
         for result in batch.tool_results:
             tracker.handle_result(result, session)
             for entry in state.tool_call_trace:
-                if entry.get("id") == result.tool_call_id:
-                    entry["result"] = self._truncate_for_trace(result.result)
+                if entry.id == result.tool_call_id:
+                    entry.result = self._truncate_for_trace(result.result)
                     break
         if batch.tool_results and not tracker.pending:
             self._flush_pending_system_events(session, state)
