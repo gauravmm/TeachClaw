@@ -1,12 +1,19 @@
-"""Tests for MCP reconnection behavior."""
+"""Tests for MCP server slot connect / reconnect behaviour.
 
-import asyncio
+The real MCP transport is replaced by a fake `_MCPLiveConnection` so the
+tests exercise `_MCPServerSlot` directly without any IO.
+"""
+
+from __future__ import annotations
+
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from mcp.types import TextContent
 
-from benchclaw.agent.tools.mcp_manager import MCPManager, MCPServerConfig, _MCPServerSlot
+from benchclaw.agent.tools import mcp_manager as mcp_module
+from benchclaw.agent.tools.mcp_manager import MCPManager, MCPServerConfig
 
 
 class _FakeTool:
@@ -17,16 +24,12 @@ class _FakeTool:
 
 
 class _FakeSession:
-    def __init__(
-        self,
-        tool_name: str,
-        text: str,
-        fail_once: bool = False,
-        fail_times: int = 0,
-    ):
+    """Minimal session with the methods `_MCPLiveConnection` and `_MCPServerSlot`
+    actually call: `list_tools` (during connect) and `call_tool` (during execute)."""
+
+    def __init__(self, tool_name: str, text: str, fail_times: int = 0):
         self._tool_name = tool_name
         self._text = text
-        self._fail_once = fail_once
         self._fail_times = fail_times
         self.call_count = 0
 
@@ -35,140 +38,135 @@ class _FakeSession:
             tools=[_FakeTool(name=self._tool_name, description="fake", input_schema={})]
         )
 
-    async def call_tool(self, name: str, arguments: dict):
+    async def call_tool(self, name: str, arguments: dict[str, Any]):
         self.call_count += 1
         if self._fail_times > 0:
             self._fail_times -= 1
             raise RuntimeError("connection dropped")
-        if self._fail_once:
-            self._fail_once = False
-            raise RuntimeError("connection dropped")
-
         return SimpleNamespace(
             content=[TextContent(type="text", text=f"{name}:{arguments.get('value', self._text)}")]
         )
 
 
-class _TaskBoundContext:
-    def __init__(self):
-        self.enter_task = None
-        self.exit_task = None
+class _FakeLiveConnectionFactory:
+    """Build fake `_MCPLiveConnection` classes that walk through a script.
 
-    async def __aenter__(self):
-        self.enter_task = asyncio.current_task()
+    Each entry in ``script`` is either an ``Exception`` (raised from
+    ``__aenter__``) or a ``_FakeSession`` (returned successfully). Iterates
+    through the script in order; reaching the end raises ``StopIteration``.
+    """
+
+    def __init__(self, script: list[Exception | _FakeSession]) -> None:
+        self._script = iter(script)
+        self.constructed: list[_FakeLiveConnection] = []
+
+    def __call__(self, config: MCPServerConfig, *, on_exit=None):
+        connection = _FakeLiveConnection(config, on_exit, next(self._script))
+        self.constructed.append(connection)
+        return connection
+
+
+class _FakeLiveConnection:
+    def __init__(self, config, on_exit, outcome: Exception | _FakeSession) -> None:
+        self.config = config
+        self._on_exit = on_exit
+        self._outcome = outcome
+        self.session: _FakeSession | None = None
+        self.tools: list = []
+        self.entered = False
+        self.exited = False
+
+    async def __aenter__(self) -> "_FakeLiveConnection":
+        self.entered = True
+        if isinstance(self._outcome, Exception):
+            raise self._outcome
+        self.session = self._outcome
+        self.tools = list((await self.session.list_tools()).tools)
         return self
 
-    async def __aexit__(self, exc_type, exc, tb):
-        self.exit_task = asyncio.current_task()
-        if self.exit_task is not self.enter_task:
-            raise RuntimeError("context exited in different task")
+    async def __aexit__(self, *exc) -> None:
+        self.exited = True
+
+    async def call_tool(self, tool_name: str, arguments: dict[str, Any]):
+        assert self.session is not None
+        return await self.session.call_tool(tool_name, arguments)
+
+
+def _patch_live_connection(
+    monkeypatch: pytest.MonkeyPatch, script: list[Exception | _FakeSession]
+) -> _FakeLiveConnectionFactory:
+    factory = _FakeLiveConnectionFactory(script)
+    monkeypatch.setattr(mcp_module, "_MCPLiveConnection", factory)
+    return factory
 
 
 @pytest.mark.asyncio
 async def test_mcp_manager_retries_initial_connect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_connect_with_retries` retries transient failures during startup."""
     cfg = MCPServerConfig(name="demo", transport="http", url="https://example.test/mcp")
     manager = MCPManager([cfg])
-    manager.RETRY_DELAY_S = 0
 
-    attempts = 0
-
-    async def fake_open_session(self, exit_stack):
-        nonlocal attempts
-        attempts += 1
-        if attempts < 3:
-            raise RuntimeError("temporary connect failure")
-        return _FakeSession(tool_name="echo", text="ok")
-
-    monkeypatch.setattr(_MCPServerSlot, "_open_session", fake_open_session)
+    factory = _patch_live_connection(
+        monkeypatch,
+        [
+            RuntimeError("temporary connect failure"),
+            RuntimeError("temporary connect failure"),
+            _FakeSession(tool_name="echo", text="ok"),
+        ],
+    )
+    monkeypatch.setattr(mcp_module.asyncio, "sleep", _no_sleep)
 
     async with manager:
         assert "demo__echo" in manager
-        assert manager.get_definitions()[0]["function"]["name"] == "demo__echo"
+        [definition] = manager.get_definitions()
+        assert definition["function"]["name"] == "demo__echo"
 
-    assert attempts == 3
-
-
-@pytest.mark.asyncio
-async def test_mcp_manager_reconnects_and_retries_tool_call(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cfg = MCPServerConfig(name="demo", transport="http", url="https://example.test/mcp")
-    manager = MCPManager([cfg])
-    manager.RETRY_DELAY_S = 0
-
-    sessions = iter(
-        [
-            _FakeSession(tool_name="echo", text="first", fail_once=True),
-            _FakeSession(tool_name="echo", text="recovered"),
-        ]
-    )
-
-    async def fake_open_session(self, exit_stack):
-        return next(sessions)
-
-    monkeypatch.setattr(_MCPServerSlot, "_open_session", fake_open_session)
-
-    async with manager:
-        result = await manager.execute("demo__echo", {"value": "payload"})
-
-    assert result == "echo:payload"
+    assert len(factory.constructed) == 3, "expected exactly three connect attempts"
+    assert factory.constructed[-1].entered
+    assert factory.constructed[-1].session is not None
 
 
 @pytest.mark.asyncio
-async def test_mcp_manager_reconnect_cleans_up_in_same_task(
+async def test_mcp_manager_drops_connection_on_tool_call_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A failing tool call propagates the error and drops the slot's connection."""
     cfg = MCPServerConfig(name="demo", transport="http", url="https://example.test/mcp")
     manager = MCPManager([cfg])
-    manager.RETRY_DELAY_S = 0
-
-    contexts: list[_TaskBoundContext] = []
-    sessions = iter(
-        [
-            _FakeSession(tool_name="echo", text="first", fail_once=True),
-            _FakeSession(tool_name="echo", text="recovered"),
-        ]
-    )
-
-    async def fake_open_session(self, exit_stack):
-        context = _TaskBoundContext()
-        contexts.append(context)
-        await exit_stack.enter_async_context(context)
-        return next(sessions)
-
-    monkeypatch.setattr(_MCPServerSlot, "_open_session", fake_open_session)
-
-    async with manager:
-        result = await manager.execute("demo__echo", {"value": "payload"})
-
-    assert result == "echo:payload"
-    assert len(contexts) == 2
-    assert all(context.enter_task is context.exit_task for context in contexts)
-
-
-@pytest.mark.asyncio
-async def test_mcp_manager_retries_tool_call_at_most_once_after_reconnect(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cfg = MCPServerConfig(name="demo", transport="http", url="https://example.test/mcp")
-    manager = MCPManager([cfg])
-    manager.RETRY_DELAY_S = 0
-
-    first_session = _FakeSession(tool_name="echo", text="first", fail_once=True)
-    second_session = _FakeSession(tool_name="echo", text="second", fail_times=1)
-    sessions = iter([first_session, second_session])
-
-    async def fake_open_session(self, exit_stack):
-        return next(sessions)
-
-    monkeypatch.setattr(_MCPServerSlot, "_open_session", fake_open_session)
+    failing_session = _FakeSession(tool_name="echo", text="x", fail_times=1)
+    factory = _patch_live_connection(monkeypatch, [failing_session])
 
     async with manager:
         with pytest.raises(RuntimeError, match="connection dropped"):
             await manager.execute("demo__echo", {"value": "payload"})
 
-    assert first_session.call_count == 1
-    assert second_session.call_count == 1
+        slot = manager._servers["demo"]
+        assert slot.connection is None, "slot must drop its connection after a tool failure"
+
+    assert failing_session.call_count == 1
+    assert factory.constructed[0].exited
+
+
+@pytest.mark.asyncio
+async def test_mcp_manager_reconnects_on_next_execute_after_drop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After a drop, the next `execute` opens a fresh connection."""
+    cfg = MCPServerConfig(name="demo", transport="http", url="https://example.test/mcp")
+    manager = MCPManager([cfg])
+    failing_session = _FakeSession(tool_name="echo", text="x", fail_times=1)
+    healthy_session = _FakeSession(tool_name="echo", text="ok")
+    factory = _patch_live_connection(monkeypatch, [failing_session, healthy_session])
+
+    async with manager:
+        with pytest.raises(RuntimeError, match="connection dropped"):
+            await manager.execute("demo__echo", {"value": "payload"})
+
+        result = await manager.execute("demo__echo", {"value": "payload"})
+
+    assert result == "echo:payload"
+    assert len(factory.constructed) == 2, "second execute should open a new connection"
+    assert healthy_session.call_count == 1
 
 
 def test_mcp_manager_rejects_duplicate_server_names() -> None:
@@ -179,3 +177,8 @@ def test_mcp_manager_rejects_duplicate_server_names() -> None:
 
     with pytest.raises(ValueError, match="Duplicate MCP server names are not allowed: demo"):
         MCPManager(configs)
+
+
+async def _no_sleep(_seconds: float) -> None:
+    """Replace asyncio.sleep so retry backoff in `_connect_with_retries` is instant."""
+    return None
