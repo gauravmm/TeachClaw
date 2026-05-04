@@ -9,8 +9,7 @@ The storage tree is laid out as follows:
           profile.md                  # durable facts the bot has learned about the user
           media/                      # images and other media for this conversation
           ...                         # any other files the model writes
-      common/                         # shared resources, read-only by default
-        scratch/<chat_id>/            # this user's writable scratch directory
+      common/                         # shared resources, read-only
       skills/                         # SKILL.md packages; read-only
 
 Filesystem tools see this layout via ToolContext.storage_root /
@@ -34,10 +33,6 @@ def common_dir(workspace: Path) -> Path:
     return workspace / "common"
 
 
-def scratch_dir(workspace: Path, addr: MessageAddress) -> Path:
-    return common_dir(workspace) / "scratch" / addr.chat_id
-
-
 def skills_dir(workspace: Path) -> Path:
     return workspace / "skills"
 
@@ -54,7 +49,6 @@ def ensure_user_dirs(workspace: Path, addr: MessageAddress) -> None:
     """Pre-create the per-conversation directories that the sandbox expects."""
     storage_root(workspace, addr).mkdir(parents=True, exist_ok=True)
     media_dir(workspace, addr).mkdir(parents=True, exist_ok=True)
-    scratch_dir(workspace, addr).mkdir(parents=True, exist_ok=True)
 
 
 def read_profile(workspace: Path, addr: MessageAddress) -> str | None:

@@ -131,14 +131,13 @@ def _sandboxed_ctx(tmp_path):
     storage_root.mkdir(parents=True)
     common = tmp_path / "common"
     skills = tmp_path / "skills"
-    scratch = common / "scratch" / "1"
-    scratch.mkdir(parents=True)
+    common.mkdir(parents=True)
     skills.mkdir(parents=True)
     return ToolContext(
         workspace=tmp_path,
         storage_root=storage_root,
         read_roots=(skills.resolve(), common.resolve()),
-        write_roots=(scratch.resolve(),),
+        write_roots=(),
     )
 
 
@@ -184,15 +183,7 @@ def test_sandbox_write_to_common_root_rejected(tmp_path):
         _resolve_path("common/faq.md", ctx, write=True)
 
 
-def test_sandbox_write_to_own_scratch_dir_allowed(tmp_path):
+def test_sandbox_write_to_own_storage_root_allowed(tmp_path):
     ctx = _sandboxed_ctx(tmp_path)
-    resolved = _resolve_path("common/scratch/1/notes.md", ctx, write=True)
-    assert resolved == (tmp_path / "common" / "scratch" / "1" / "notes.md").resolve()
-
-
-def test_sandbox_write_to_other_user_scratch_rejected(tmp_path):
-    ctx = _sandboxed_ctx(tmp_path)
-    other_scratch = tmp_path / "common" / "scratch" / "2"
-    other_scratch.mkdir(parents=True)
-    with pytest.raises(PermissionError):
-        _resolve_path("common/scratch/2/notes.md", ctx, write=True)
+    resolved = _resolve_path("notes.md", ctx, write=True)
+    assert resolved == (ctx.storage_root / "notes.md").resolve()

@@ -9,6 +9,8 @@ from pathlib import Path
 
 from loguru import logger
 
+from benchclaw import personalities
+from benchclaw import storage as storage_layout
 from benchclaw.agent.context import build_system_prompt
 from benchclaw.agent.tools.base import ToolContext
 from benchclaw.agent.tools.mcp_manager import MCPManager
@@ -28,7 +30,6 @@ from benchclaw.bus import (
 from benchclaw.config import Config
 from benchclaw.media import MediaRepository
 from benchclaw.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from benchclaw import personalities, storage as storage_layout
 from benchclaw.session import (
     AssistantEvent,
     ConversationEvent,
@@ -39,6 +40,7 @@ from benchclaw.session import (
     ToolEvent,
     UserEvent,
 )
+from benchclaw.utils import now_aware
 
 _SUMMARIZE_SYSTEM_PROMPT = """\
 You are a conversation summarizer for an agentic AI assistant.
@@ -263,33 +265,40 @@ class AgentLoop:
             session_label=session.describe_current_session(),
             chunk_elision_active=self.config.compaction.elide_chunks_after_turn,
             profile_text=storage_layout.read_profile(self.workspace_path, addr),
-            storage_path=str(storage_root),
+            storage_path=str(storage_root.expanduser().resolve()),
             personality_overlay=persona.overlay,
         )
         messages = session.render_llm_messages(prompt, self._render_options())
         listing = storage_layout.listing_for_user(self.workspace_path, addr)
+        current_time = now_aware().strftime("%Y-%m-%d %H:%M (%A) %z")
         media_blocks = (
-            self.media_repo.build_media_blocks(pending_media)
+            self.media_repo.build_media_blocks(addr, pending_media)
             if (pending_media and self.media_repo)
             else None
         )
-        return self._inject_tail(messages, listing=listing, media_blocks=media_blocks)
+        return self._inject_tail(
+            messages,
+            listing=listing,
+            current_time=current_time,
+            media_blocks=media_blocks,
+        )
 
     @staticmethod
     def _inject_tail(
         messages: list[dict[str, object]],
         *,
         listing: str | None,
+        current_time: str | None,
         media_blocks: list[dict[str, object]] | None,
     ) -> list[dict[str, object]]:
-        """Attach storage listing and pending media blocks to the latest user turn.
+        """Attach storage listing, current time, and pending media to the latest user turn.
 
-        The listing goes in as a synthetic user message right before the most
-        recent user turn so the cacheable system-prompt prefix stays stable.
-        Media blocks are prepended to the latest user message's content,
-        promoting plain text into a content-block list when needed.
+        The listing and time go in as a synthetic user message right before
+        the most recent user turn so the cacheable system-prompt prefix stays
+        stable. Media blocks are prepended to the latest user message's
+        content, promoting plain text into a content-block list when needed.
         """
-        if not listing and not media_blocks:
+        if not listing and not current_time and not media_blocks:
             return messages
         last_user_idx = next(
             (i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"),
@@ -306,12 +315,17 @@ class AgentLoop:
             else:
                 user_msg["content"] = [*media_blocks, {"type": "text", "text": existing}]
             out[last_user_idx] = user_msg
-        if listing:
-            listing_msg: dict[str, object] = {
+        if listing or current_time:
+            parts: list[str] = []
+            if current_time:
+                parts.append(f"<current_time>{current_time}</current_time>")
+            if listing:
+                parts.append(f"<storage_listing>\n{listing}\n</storage_listing>")
+            ctx_msg: dict[str, object] = {
                 "role": "user",
-                "content": f"<storage_listing>\n{listing}\n</storage_listing>",
+                "content": "\n".join(parts),
             }
-            out.insert(last_user_idx, listing_msg)
+            out.insert(last_user_idx, ctx_msg)
         return out
 
     @staticmethod
@@ -610,9 +624,7 @@ class AgentLoop:
             storage_layout.skills_dir(self.workspace_path).resolve(),
             storage_layout.common_dir(self.workspace_path).resolve(),
         )
-        write_roots: tuple[Path, ...] = (
-            storage_layout.scratch_dir(self.workspace_path, addr).resolve(),
-        )
+        write_roots: tuple[Path, ...] = ()
         call_ctx = ToolContext(
             workspace=self.tools._master_ctx.workspace,
             bus=self.bus,

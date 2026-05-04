@@ -29,7 +29,10 @@ class ToolRegistry:
         self._exit_stack = contextlib.AsyncExitStack()
 
         for name, tool_cls in BUILTIN_TOOLS:
-            tool = tool_cls.build(getattr(tools_config, name, None), ctx)
+            tool_config = getattr(tools_config, name, None)
+            if tool_config is not None and getattr(tool_config, "enabled", True) is False:
+                continue
+            tool = tool_cls.build(tool_config, ctx)
             self._tools[tool.name] = tool
 
     async def __aenter__(self) -> Self:

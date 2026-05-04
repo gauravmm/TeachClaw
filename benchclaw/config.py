@@ -8,6 +8,7 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings
 
+from benchclaw.agent.tools.base import ToolConfig
 from benchclaw.agent.tools.mcp_manager import MCPServerConfig
 from benchclaw.agent.tools.shell import ExecToolConfig
 from benchclaw.agent.tools.web import WebSearchConfig
@@ -71,8 +72,14 @@ class GatewayConfig(BaseModel):
 
 
 class ToolsConfig(BaseModel):
-    """Static built-in tool configuration."""
+    """Static built-in tool configuration.
 
+    Tools without their own config use a plain ``ToolConfig`` so that
+    ``enabled: false`` still works uniformly. Add an entry here for any
+    built-in tool the user should be able to toggle.
+    """
+
+    cron: ToolConfig = Field(default_factory=ToolConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
     web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
 

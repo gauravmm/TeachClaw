@@ -11,10 +11,10 @@ import httpx
 from pydantic import BaseModel, Field
 from readability import Document
 
-from benchclaw.agent.tools.base import Tool, ToolContext
+from benchclaw.agent.tools.base import Tool, ToolConfig, ToolContext
 
 
-class WebSearchConfig(BaseModel):
+class WebSearchConfig(ToolConfig):
     """Web search tool configuration."""
 
     api_key: str = ""

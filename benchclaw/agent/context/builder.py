@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any
 from jinja2 import Environment, PackageLoader
 
 from benchclaw.agent.skills import SkillsLoader
-from benchclaw.utils import now_aware
 
 if TYPE_CHECKING:
     from benchclaw.agent.tools.base import Tool
@@ -64,7 +63,6 @@ def build_system_prompt(
     skills = SkillsLoader(workspace).get_all_skills()
     system = platform.system()
     return _env().get_template("system_prompt.j2").render(
-        now=now_aware().strftime("%Y-%m-%d %H:%M (%A) %z"),
         runtime=(
             f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, "
             f"Python {platform.python_version()}"

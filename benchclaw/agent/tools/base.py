@@ -47,6 +47,12 @@ class ToolContext:
     write_roots: tuple[Path, ...] = ()
 
 
+class ToolConfig(BaseModel):
+    """Base config shared by every tool. Subclass to add tool-specific fields."""
+
+    enabled: bool = True
+
+
 class _NoParams(BaseModel):
     """Default Params for tools that take no arguments."""
 

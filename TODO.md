@@ -133,6 +133,48 @@ Canonical design in **`spec/TELEGRAM.md`**.
       rotation, `authenticated_addresses` filtering, the rate limiter's
       lockout-after-threshold behaviour.
 
+### Persona switch coherence
+- Problem: persona overlay lives in the system prompt, but prior
+  assistant turns in the session were produced under the old persona.
+  In-context learning from that history pulls the model back toward
+  the old voice, especially on small models (Gemma 4B). Switches are
+  also silent today — nothing in the session marks the boundary, so
+  on reload there's no record of when persona changed.
+- Fix (1): in `personalities.write_personality`, also append a
+  `SystemEvent` to the session like "User switched persona to
+  <label>. Earlier assistant turns used a different voice; adopt the
+  new persona from now on." Durable marker, survives reload, shows up
+  in transcript dumps.
+- Fix (2): move the persona overlay out of `system_prompt.j2` and
+  into the synthetic tail message in `AgentLoop._inject_tail`,
+  alongside `<current_time>` and `<storage_listing>`. Most-recent-wins
+  by position, so the active persona always sits closest to the
+  latest user turn. Bonus: persona switches stop busting the cacheable
+  system-prompt prefix.
+- Apply both — (1) marks the boundary in history, (2) keeps the live
+  persona in the dominant position.
+
+### Prompt-cache busting check
+- Open question: does vLLM's prefix-cache surface per-request hit/miss
+  stats we can log, or only aggregate `/metrics`? Check before wiring
+  anything provider-side.
+- If vLLM only exposes aggregate metrics, fall back to in-process
+  detection: a `PromptCacheMonitor` keyed by `MessageAddress`, called
+  from `AgentLoop._build_prompt_and_messages` after rendering. Stores
+  the last system message and the message-list prefix up to (but not
+  including) the synthetic `<current_time>/<storage_listing>`
+  injection and the latest user turn. On each new build, byte-compare
+  against the stored values; on divergence, log first-differing
+  offset + ~120 chars of context, plus which prefix index changed.
+  Warn-only, dedup repeated identical warnings per address.
+- Expected legitimate causes (don't treat as bugs): persona switch,
+  profile.md write, tool registry change, workspace bootstrap edit.
+  Anything else is a real cache-busting bug.
+- If vLLM does expose per-request cache stats, extend `LLMResponse.usage`
+  to carry them and log `cache_read_tokens / total_prompt_tokens` per
+  turn. Build alongside the in-process monitor, not instead of it —
+  they catch different classes of bug.
+
 # Progress
 
   TODO status:

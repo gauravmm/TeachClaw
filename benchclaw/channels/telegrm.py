@@ -720,7 +720,7 @@ class TelegramChannel(BaseChannel):
                         original_name=getattr(media_file, "file_name", None),
                     )
                     await file.download_to_drive(str(file_path))
-                    media_paths.append(self.media_repo.media_relpath(file_path))
+                    media_paths.append(self.media_repo.model_relpath(file_path))
                     media_metadata.append(
                         {
                             "path": str(file_path),
@@ -904,7 +904,7 @@ class TelegramChannel(BaseChannel):
         assert self._app
         try:
             if self.media_repo and not Path(msg.media[0]).is_absolute():
-                image_path, mime = self.media_repo.resolve_file(msg.media[0])
+                image_path, mime = self.media_repo.resolve_file(msg.address, msg.media[0])
             else:
                 image_path = Path(msg.media[0])
                 if not image_path.is_absolute():

@@ -1,4 +1,14 @@
-"""Structured media repository for workspace files and captions."""
+"""Per-user media repository.
+
+Each conversation owns its own media tree under
+``storage/<channel>/<chat_id>/media/`` with a flat naming scheme:
+``<YYYYMMDDTHHMMSS>-<NN>.<ext>``. The serial disambiguates files
+registered in the same second. Per-user metadata lives at
+``storage/<channel>/<chat_id>/.media.json``.
+
+The model sees media via the sandbox-relative path ``media/<filename>``;
+nothing outside the per-user storage tree is reachable.
+"""
 
 from __future__ import annotations
 
@@ -11,10 +21,13 @@ from typing import Any
 
 import filetype
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
+from pydantic import BaseModel, ConfigDict
 
+from benchclaw import storage as storage_layout
 from benchclaw.bus import MessageAddress
 from benchclaw.utils import _parse_timestamp, ensure_aware, now_aware
+
+MEDIA_PREFIX = "media"
 
 
 def extension_for_mime(mime_type: str | None) -> str:
@@ -37,7 +50,6 @@ def extension_for_mime(mime_type: str | None) -> str:
 class MediaEntry(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    address: MessageAddress | None = None
     sender_id: str | None = None
     timestamp: str | None = None  # ISO
     media_type: str = "file"
@@ -45,69 +57,57 @@ class MediaEntry(BaseModel):
     original_name: str | None = None
     caption: str | None = None
 
-    @field_validator("address", mode="before")
-    @classmethod
-    def _parse_address(cls, value: Any) -> MessageAddress | None:
-        if value is None or isinstance(value, MessageAddress):
-            return value
-        if isinstance(value, str):
-            return MessageAddress.from_string(value)
-        raise TypeError(f"Unsupported media address value: {value!r}")
-
-    @field_serializer("address")
-    def _serialize_address(self, value: MessageAddress | None) -> str | None:
-        return str(value) if value else None
-
 
 class MediaRepository:
-    """
-    Persistent store for inbound media records and captions for workspace files.
+    """Per-user inbound-media store.
 
-    Registered inbound media still lives under `workspace/media/...`.
-    Metadata lives at `workspace/.media.json` and is keyed by workspace-relative path.
+    Files for ``<channel>:<chat_id>`` live at
+    ``<workspace>/storage/<channel>/<chat_id>/media/<filename>``; metadata
+    at ``<workspace>/storage/<channel>/<chat_id>/.media.json``. Entries are
+    keyed by the sandbox-relative path the model sees, e.g.
+    ``media/20260504T182300-01.jpg``.
     """
 
     def __init__(self, workspace: Path, max_age_days: int = 30) -> None:
         self.workspace = workspace
-        self.media_dir = workspace / "media"
-        self.meta_path = workspace / ".media.json"
         self.max_age_days = max_age_days
-        self._entries: dict[str, MediaEntry] = {}
+        self._cache: dict[MessageAddress, dict[str, MediaEntry]] = {}
 
-    def load(self) -> None:
-        """Load metadata from the workspace root metadata file."""
-        if not self.meta_path.exists():
+    def _meta_path(self, address: MessageAddress) -> Path:
+        return storage_layout.storage_root(self.workspace, address) / ".media.json"
+
+    def _media_dir(self, address: MessageAddress) -> Path:
+        return storage_layout.media_dir(self.workspace, address)
+
+    def _entries(self, address: MessageAddress) -> dict[str, MediaEntry]:
+        cached = self._cache.get(address)
+        if cached is not None:
+            return cached
+        entries: dict[str, MediaEntry] = {}
+        meta_path = self._meta_path(address)
+        if meta_path.exists():
+            try:
+                data = json.loads(meta_path.read_text(encoding="utf-8"))
+                for relpath, payload in data.items():
+                    entries[relpath] = MediaEntry.model_validate(payload)
+            except Exception as e:
+                logger.warning(f"Failed to load media metadata for {address}: {e}")
+        self._cache[address] = entries
+        return entries
+
+    def _save(self, address: MessageAddress) -> None:
+        entries = self._cache.get(address)
+        if entries is None:
             return
-        try:
-            data = json.loads(self.meta_path.read_text(encoding="utf-8"))
-            self._entries.clear()
-            self._load_entries(data)
-        except Exception as e:
-            logger.warning(f"Failed to load media metadata: {e}")
-
-    def save(self) -> None:
-        """Write metadata to the workspace root metadata file."""
-        self.workspace.mkdir(parents=True, exist_ok=True)
-        data: dict[str, Any] = {}
-        for relpath, entry in sorted(self._entries.items()):
-            node = data
-            parts = Path(relpath).parts
-            for part in parts[:-1]:
-                node = node.setdefault(part, {})
-            node[parts[-1]] = {"_entry": entry.model_dump(mode="json")}
-        self.meta_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        meta_path = self._meta_path(address)
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {rel: entry.model_dump(mode="json") for rel, entry in sorted(entries.items())}
+        meta_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
     @staticmethod
-    def _address_matches(record_addr: str, query_addr: MessageAddress) -> bool:
-        if record_addr == str(query_addr):
-            return True
-        try:
-            parsed = MessageAddress.from_string(record_addr)
-        except ValueError:
-            return False
-        if parsed.channel != query_addr.channel:
-            return False
-        return parsed.chat_id == query_addr.chat_id
+    def model_relpath(abs_path: Path) -> str:
+        """Sandbox-relative path the model sees for an absolute media path."""
+        return f"{MEDIA_PREFIX}/{abs_path.name}"
 
     def register(
         self,
@@ -119,22 +119,22 @@ class MediaRepository:
         timestamp: datetime | None = None,
         original_name: str | None = None,
     ) -> Path:
-        """
-        Allocate a new inbound media path, record the entry, save metadata, and return the abs path.
-        Caller must write the file bytes to the returned path.
+        """Allocate a new inbound media path under this user's media dir.
+
+        Returns the absolute path; the caller writes file bytes to it.
         """
         assert ext.startswith(".") or ext == "", "ext should include the dot, e.g. '.jpg'"
         ts = ensure_aware(timestamp or now_aware())
-        hhmm = ts.strftime("%H%M")
-        mmdd = ts.strftime("%m%d")
-        hash8 = address.hash8
-        serial = self._next_serial(hash8, mmdd, hhmm)
-        relpath = Path("media") / hash8 / mmdd / f"{hhmm}-{serial}{ext}"
-        abs_path = self.workspace / relpath
+        prefix = ts.strftime("%Y%m%dT%H%M%S")
+        entries = self._entries(address)
+        media_dir = self._media_dir(address)
+        serial = self._next_serial(entries, media_dir, prefix)
+        filename = f"{prefix}-{serial}{ext}"
+        relpath = f"{MEDIA_PREFIX}/{filename}"
+        abs_path = media_dir / filename
         abs_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self._entries[str(relpath)] = MediaEntry(
-            address=address,
+        entries[relpath] = MediaEntry(
             sender_id=sender_id,
             timestamp=ts.isoformat(timespec="seconds"),
             media_type=media_type,
@@ -142,40 +142,32 @@ class MediaRepository:
             original_name=original_name,
             caption=None,
         )
-        self.save()
+        self._save(address)
         return abs_path
 
-    def media_relpath(self, abs_path: Path) -> str:
-        """Return a workspace-relative path."""
-        return str(abs_path.relative_to(self.workspace))
-
-    def resolve_file(self, path: str) -> tuple[Path, str | None]:
-        """Resolve a workspace-relative path to (absolute_path, mime_type)."""
+    def resolve_file(self, address: MessageAddress, path: str) -> tuple[Path, str | None]:
+        """Resolve a sandbox-relative media path under this user's media dir."""
         relpath = self._normalize_relpath(path)
-        abs_path = self.workspace / relpath
+        abs_path = self._media_dir(address) / Path(relpath).name
         if not abs_path.is_file():
             raise FileNotFoundError(f"Media file not found: {relpath}")
-
-        entry = self._entries.get(relpath)
+        entry = self._entries(address).get(relpath)
         mime_type = entry.mime_type if entry else None
         if not mime_type:
             mime_type = filetype.guess_mime(str(abs_path))
         return abs_path, mime_type
 
-    def image_block(self, path: str) -> dict[str, object]:
-        """Build a provider-ready image block for one workspace-relative file path."""
-        abs_path, mime_type = self.resolve_file(path)
+    def image_block(self, address: MessageAddress, path: str) -> dict[str, object]:
+        abs_path, mime_type = self.resolve_file(address, path)
         if not mime_type or not mime_type.startswith("image/"):
             raise ValueError(f"Path is not an image: {path}")
         data = base64.b64encode(abs_path.read_bytes()).decode()
         return {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{data}"}}
 
-    def audio_block(self, path: str) -> dict[str, object]:
-        """Build a provider-ready audio block for one workspace-relative file path."""
-        abs_path, mime_type = self.resolve_file(path)
+    def audio_block(self, address: MessageAddress, path: str) -> dict[str, object]:
+        abs_path, mime_type = self.resolve_file(address, path)
         if not mime_type or not mime_type.startswith("audio/"):
             raise ValueError(f"Path is not an audio file: {path}")
-        # Strip codec parameter for the block media_type (e.g. "audio/ogg; codecs=opus" → "audio/ogg")
         block_mime = mime_type.split(";")[0].strip()
         data = base64.b64encode(abs_path.read_bytes()).decode()
         return {
@@ -183,25 +175,26 @@ class MediaRepository:
             "source": {"type": "base64", "media_type": block_mime, "data": data},
         }
 
-    def build_media_blocks(self, paths: Iterable[str]) -> list[dict[str, object]]:
-        """Build provider-ready content blocks for images and audio, skipping unsupported paths."""
+    def build_media_blocks(
+        self, address: MessageAddress, paths: Iterable[str]
+    ) -> list[dict[str, object]]:
         blocks: list[dict[str, object]] = []
         for path in paths:
             try:
-                _, mime_type = self.resolve_file(path)
+                _, mime_type = self.resolve_file(address, path)
                 if mime_type and mime_type.startswith("audio/"):
-                    blocks.append(self.audio_block(path))
+                    blocks.append(self.audio_block(address, path))
                 else:
-                    blocks.append(self.image_block(path))
+                    blocks.append(self.image_block(address, path))
             except (FileNotFoundError, ValueError):
                 logger.warning(f"Skipping unsupported or missing media file: {path}")
         return blocks
 
-    def set_caption(self, path: str, caption: str) -> None:
-        """Update or create a caption for any workspace-relative file path."""
+    def set_caption(self, address: MessageAddress, path: str, caption: str) -> None:
         relpath = self._normalize_relpath(path)
-        abs_path, mime_type = self.resolve_file(relpath)
-        entry = self._entries.get(relpath)
+        abs_path, mime_type = self.resolve_file(address, relpath)
+        entries = self._entries(address)
+        entry = entries.get(relpath)
         if entry is None:
             entry = MediaEntry(
                 timestamp=self._file_timestamp(abs_path),
@@ -209,7 +202,7 @@ class MediaRepository:
                 mime_type=mime_type,
                 original_name=abs_path.name,
             )
-            self._entries[relpath] = entry
+            entries[relpath] = entry
         else:
             if entry.timestamp is None:
                 entry.timestamp = self._file_timestamp(abs_path)
@@ -218,14 +211,12 @@ class MediaRepository:
             if not entry.original_name:
                 entry.original_name = abs_path.name
         entry.caption = caption
-        self.save()
+        self._save(address)
 
-    def iter_records(self) -> Iterable[dict[str, Any]]:
-        """Yield stored metadata records keyed by workspace-relative path."""
-        for relpath, entry in sorted(self._entries.items()):
+    def iter_records(self, address: MessageAddress) -> Iterable[dict[str, Any]]:
+        for relpath, entry in sorted(self._entries(address).items()):
             yield {
                 "path": relpath,
-                "address": str(entry.address) if entry.address else None,
                 "sender_id": entry.sender_id,
                 "timestamp": entry.timestamp,
                 "media_type": entry.media_type,
@@ -236,29 +227,23 @@ class MediaRepository:
 
     def search(
         self,
+        address: MessageAddress,
         *,
         query: str | None = None,
-        address: MessageAddress | None = None,
         sender_id: str | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
-        """Search saved file metadata and captions across the whole workspace."""
+        """Search this user's captioned media."""
         limit = max(1, min(limit, 20))
         needle = (query or "").strip().casefold()
         lower_from = self._parse_date_bound(date_from, end=False)
         upper_to = self._parse_date_bound(date_to, end=True)
         matches: list[tuple[int, float, dict[str, Any]]] = []
 
-        # TODO: Replace this unstructured data dict with a structured data class with proper types and validation.
-        # ASSUMPTION: The repository will contain <50 entries. If that grows much larger, we'll want to build an index or use a real database instead of scanning all entries on each search.
-        # TODO: Emit a warning only once using a lru-cache helper placed in utils.
-        for record in self.iter_records():
+        for record in self.iter_records(address):
             if record.get("caption") is None:
-                continue
-            record_addr = record["address"]
-            if address is not None and not self._address_matches(record_addr, address):
                 continue
             if sender_id is not None and record["sender_id"] != sender_id:
                 continue
@@ -267,7 +252,6 @@ class MediaRepository:
                 continue
             if upper_to is not None and (record_ts is None or record_ts > upper_to):
                 continue
-
             score = self._score_record(record, needle)
             if needle and score < 0:
                 continue
@@ -301,23 +285,21 @@ class MediaRepository:
         name = (record.get("original_name") or "").casefold()
         caption = (record.get("caption") or "").casefold()
         mime = (record.get("mime_type") or "").casefold()
-        address = (record.get("address") or "").casefold()
         sender_id = (record.get("sender_id") or "").casefold()
 
-        if any(value == needle for value in (path, name, address, sender_id)):
+        if any(value == needle for value in (path, name, sender_id)):
             return 300
         if needle in path or needle in name:
             return 200
         if needle in caption:
             return 100
-        if any(needle in hay for hay in (mime, address, sender_id)):
+        if any(needle in hay for hay in (mime, sender_id)):
             return 50
         return -1
 
     async def __aenter__(self) -> "MediaRepository":
-        self.media_dir.mkdir(parents=True, exist_ok=True)
-        self.load()
-        if purged := self._purge_old():
+        purged = self._purge_old()
+        if purged:
             logger.info(f"Purged {purged} old media files")
         return self
 
@@ -325,55 +307,62 @@ class MediaRepository:
         pass
 
     def _purge_old(self) -> int:
-        """Delete old registered media files and their metadata records."""
+        """Walk every per-user storage dir and prune expired media."""
         cutoff = now_aware() - timedelta(days=self.max_age_days)
+        storage_root = self.workspace / "storage"
+        if not storage_root.is_dir():
+            return 0
         deleted = 0
-        for relpath, entry in list(self._entries.items()):
-            if not relpath.startswith("media/"):
+        for channel_dir in storage_root.iterdir():
+            if not channel_dir.is_dir() or channel_dir.name == "_admin":
                 continue
-            if entry.timestamp is None:
-                continue
-            if _parse_timestamp(entry.timestamp) >= cutoff:
-                continue
-            (self.workspace / relpath).unlink(missing_ok=True)
-            del self._entries[relpath]
-            deleted += 1
-
-        for d in sorted(self.media_dir.rglob("*"), reverse=True):
-            if d.is_dir() and not any(d.iterdir()):
-                d.rmdir()
-
-        if deleted:
-            self.save()
+            for chat_dir in channel_dir.iterdir():
+                if not chat_dir.is_dir():
+                    continue
+                addr = MessageAddress(channel=channel_dir.name, chat_id=chat_dir.name)
+                entries = self._entries(addr)
+                changed = False
+                for relpath, entry in list(entries.items()):
+                    if entry.timestamp is None:
+                        continue
+                    if _parse_timestamp(entry.timestamp) >= cutoff:
+                        continue
+                    (self._media_dir(addr) / Path(relpath).name).unlink(missing_ok=True)
+                    del entries[relpath]
+                    deleted += 1
+                    changed = True
+                if changed:
+                    self._save(addr)
         return deleted
 
-    def _normalize_relpath(self, path: str) -> str:
+    @staticmethod
+    def _normalize_relpath(path: str) -> str:
         rel = Path(path)
         if rel.is_absolute():
-            raise ValueError(f"Path is outside the workspace: {path}")
+            raise ValueError(f"Path is outside the media sandbox: {path}")
         parts = []
         for part in rel.parts:
             if part in ("", "."):
                 continue
             if part == "..":
-                raise ValueError(f"Path is outside the workspace: {path}")
+                raise ValueError(f"Path is outside the media sandbox: {path}")
             parts.append(part)
-        if not parts:
-            raise ValueError(f"Invalid workspace-relative path: {path}")
-        return str(Path(*parts))
+        if len(parts) != 2 or parts[0] != MEDIA_PREFIX:
+            raise ValueError(f"Media paths must look like 'media/<filename>': {path}")
+        return f"{MEDIA_PREFIX}/{parts[1]}"
 
-    def _next_serial(self, hash8: str, mmdd: str, hhmm: str) -> str:
-        parent = Path("media") / hash8 / mmdd
+    @staticmethod
+    def _next_serial(entries: dict[str, MediaEntry], media_dir: Path, prefix: str) -> str:
         max_serial = 0
-        for relpath in self._entries:
-            path = Path(relpath)
-            if path.parent != parent or not path.stem.startswith(f"{hhmm}-"):
+        for relpath in entries:
+            stem = Path(relpath).stem
+            if not stem.startswith(f"{prefix}-"):
                 continue
-            _, serial = path.stem.split("-", 1)
-            max_serial = max(max_serial, int(serial))
-        media_bucket = self.media_dir / hash8 / mmdd
-        if media_bucket.exists():
-            for file_path in media_bucket.glob(f"{hhmm}-*"):
+            _, serial = stem.split("-", 1)
+            if serial.isdigit():
+                max_serial = max(max_serial, int(serial))
+        if media_dir.exists():
+            for file_path in media_dir.glob(f"{prefix}-*"):
                 stem = file_path.stem
                 if "-" not in stem:
                     continue
@@ -381,16 +370,6 @@ class MediaRepository:
                 if serial.isdigit():
                     max_serial = max(max_serial, int(serial))
         return f"{max_serial + 1:02d}"
-
-    def _load_entries(self, node: dict[str, Any], prefix: tuple[str, ...] = ()) -> None:
-        for name, value in node.items():
-            if not isinstance(value, dict):
-                raise TypeError(f"Invalid metadata node at {'/'.join(prefix + (name,))}")
-            if "_entry" in value:
-                relpath = str(Path(*prefix, name))
-                self._entries[relpath] = MediaEntry.model_validate(value["_entry"])
-                continue
-            self._load_entries(value, prefix + (name,))
 
     @staticmethod
     def _infer_media_type(mime_type: str | None) -> str:

@@ -27,11 +27,9 @@ flowchart LR
 ## Defaults
 
 - Use tools when they help. Do not narrate routine reads/writes.
-- After tool results arrive, always continue: deliver a final text reply
-  or the next tool call. Never end a turn with no text and no tool call.
+- After tool results arrive, always continue: deliver a final text reply or the next tool call. Never end a turn with no text and no tool call.
 - On a system message, treat it as a directive: act, then report.
-- Plain text replies are delivered to the current chat automatically. Do
-  not call `message` for the normal turn reply.
+- Plain text replies are delivered to the current chat automatically. 
 - For inbound media, call `annotate_media` once with a searchable caption
   before your final response.
 
@@ -48,7 +46,7 @@ appended right before the latest user message. Use `read_file` /
 - Anything else you create is yours to organize.
 
 `skills/` and `common/` are read-only resources shared across users.
-`common/scratch/<chat_id>/` is your own writable scratch space.
+Your own storage root is the only writable directory.
 
 ## Boundaries
 

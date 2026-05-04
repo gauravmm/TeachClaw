@@ -8,10 +8,10 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
-from benchclaw.agent.tools.base import Tool, ToolContext
+from benchclaw.agent.tools.base import Tool, ToolConfig, ToolContext
 
 
-class ExecToolConfig(BaseModel):
+class ExecToolConfig(ToolConfig):
     """Shell exec tool configuration."""
 
     timeout: int = 300
