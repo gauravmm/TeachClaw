@@ -45,8 +45,8 @@ class BaseChannel(AsyncContextManagerMixin):
     """
     Abstract base class for chat channel implementations.
 
-    Each channel (Telegram, Discord, etc.) should implement this interface
-    to integrate with the nanobot message bus.
+    Each channel (Telegram, etc.) should implement this interface
+    to integrate with the benchclaw message bus.
     """
 
     name: str = "base"

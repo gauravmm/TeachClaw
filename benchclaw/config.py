@@ -1,4 +1,4 @@
-"""Configuration schema and loading utilities for nanobot."""
+"""Configuration schema and loading utilities for benchclaw."""
 
 from collections.abc import Iterator
 from pathlib import Path
@@ -129,7 +129,7 @@ class ChannelConfigs(BaseModel):
 
 
 class Config(BaseSettings):
-    """Root configuration for nanobot."""
+    """Root configuration for benchclaw."""
 
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
@@ -144,7 +144,7 @@ class Config(BaseSettings):
         """Get expanded workspace path."""
         return Path(self.agents.master.workspace).expanduser()
 
-    model_config = ConfigDict(env_prefix="NANOBOT_", env_nested_delimiter="__")  # type: ignore
+    model_config = ConfigDict(env_prefix="BENCHCLAW_", env_nested_delimiter="__")  # type: ignore
 
 
 class ConfigManager:

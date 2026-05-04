@@ -96,7 +96,7 @@ Each platform lives in `benchclaw/channels/<name>.py`:
 
 ## Config (`config.py`)
 
-- `Config` is a `pydantic_settings.BaseSettings` (env prefix `NANOBOT_`, delimiter `__`)
+- `Config` is a `pydantic_settings.BaseSettings` (env prefix `BENCHCLAW_`, delimiter `__`)
 - `ToolsConfig` and `ChannelConfigs` are built dynamically from the tool/channel registries
 - Loaded from `config/config.yaml`; written on first run with defaults
 - Channel configs live in their channel files, not in `config.py`

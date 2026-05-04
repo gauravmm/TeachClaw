@@ -1,4 +1,4 @@
-"""Entry point for nanobot: python -m nanobot [options]"""
+"""Entry point for benchclaw: python -m benchclaw [options]"""
 
 import argparse
 import asyncio
@@ -70,8 +70,8 @@ def run(args) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="nanobot",
-        description="nanobot — personal AI assistant gateway",
+        prog="benchclaw",
+        description="BenchClaw — personal AI assistant gateway",
     )
     parser.add_argument(
         "--config", type=Path, default="config/config.yaml", help="config.yaml file to use"

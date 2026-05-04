@@ -5,7 +5,7 @@ description = "A lightweight personal AI assistant framework"
 requires-python = ">=3.14"
 license = {text = "MIT"}
 authors = [
-    {name = "nanobot contributors"}
+    {name = "benchclaw contributors"}
 ]
 keywords = ["ai", "agent", "chatbot"]
 classifiers = [

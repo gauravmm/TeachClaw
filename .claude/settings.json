@@ -1,7 +1,5 @@
 {
   "permissions": {
-    "allow": [
-      "Bash(grep -l \"if __name__\" /home/gauravmm/nanobot/nanobot/channels/*.py)"
-    ]
+    "allow": []
   }
 }
