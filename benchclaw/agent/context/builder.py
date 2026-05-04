@@ -53,7 +53,6 @@ def build_system_prompt(
     chunk_elision_active: bool = False,
     profile_text: str | None = None,
     storage_path: str | None = None,
-    personality_overlay: str | None = None,
 ) -> str:
     bootstrap_files = [
         {"name": f, "content": (workspace / f).read_text(encoding="utf-8")}
@@ -83,6 +82,5 @@ def build_system_prompt(
             chunk_elision_active=chunk_elision_active,
             profile_text=(profile_text or "").strip() or None,
             storage_path=storage_path,
-            personality_overlay=(personality_overlay or "").strip() or None,
         )
     )

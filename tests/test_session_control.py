@@ -93,7 +93,10 @@ async def test_apply_batch_handles_control_event(tmp_path: Path) -> None:
     assert session.events == []
 
 
-def test_personality_overlay_threaded_into_system_prompt(tmp_path: Path) -> None:
+def test_personality_overlay_injected_into_synthetic_tail(tmp_path: Path) -> None:
+    """Persona text rides along with the synthetic <current_time>/<storage_listing>
+    user message right before the latest user turn, so it can change without
+    invalidating the cacheable system-prompt prefix."""
     loop = _make_loop(tmp_path)
     addr = MessageAddress("telegram", "abc")
     storage_layout.ensure_user_dirs(tmp_path, addr)
@@ -104,7 +107,12 @@ def test_personality_overlay_threaded_into_system_prompt(tmp_path: Path) -> None
     messages = loop._build_prompt_and_messages(session, addr, pending_media=[])
     system = messages[0]["content"]
     assert isinstance(system, str)
-    assert "Series-B VC partner" in system
+    assert "Series-B VC partner" not in system
+
+    synthetic = messages[-2]["content"]
+    assert isinstance(synthetic, str)
+    assert "<persona>" in synthetic
+    assert "Series-B VC partner" in synthetic
 
 
 def test_outbound_message_carries_tool_trace(tmp_path: Path) -> None:

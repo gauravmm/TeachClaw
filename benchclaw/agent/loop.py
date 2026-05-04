@@ -11,6 +11,7 @@ from loguru import logger
 
 from benchclaw import personalities
 from benchclaw import storage as storage_layout
+from benchclaw.agent.cache_monitor import PromptCacheMonitor
 from benchclaw.agent.context import build_system_prompt
 from benchclaw.agent.tools.base import ToolContext
 from benchclaw.agent.tools.mcp_manager import MCPManager
@@ -157,6 +158,7 @@ class AgentLoop:
         self.master_ctx = master_ctx
         mcp_manager = MCPManager(config.mcp_servers) if config.mcp_servers else None
         self.tools = ToolRegistry(config.tools, master_ctx, mcp_manager=mcp_manager)
+        self.cache_monitor = PromptCacheMonitor()
 
     async def _run_tool_and_post(
         self,
@@ -266,7 +268,6 @@ class AgentLoop:
             chunk_elision_active=self.config.compaction.elide_chunks_after_turn,
             profile_text=storage_layout.read_profile(self.workspace_path, addr),
             storage_path=str(storage_root.expanduser().resolve()),
-            personality_overlay=persona.overlay,
         )
         messages = session.render_llm_messages(prompt, self._render_options())
         listing = storage_layout.listing_for_user(self.workspace_path, addr)
@@ -276,12 +277,15 @@ class AgentLoop:
             if (pending_media and self.media_repo)
             else None
         )
-        return self._inject_tail(
+        out, stable_prefix_end = self._inject_tail(
             messages,
             listing=listing,
             current_time=current_time,
+            persona_overlay=persona.overlay,
             media_blocks=media_blocks,
         )
+        self.cache_monitor.observe(addr, out, stable_prefix_end)
+        return out
 
     @staticmethod
     def _inject_tail(
@@ -289,23 +293,32 @@ class AgentLoop:
         *,
         listing: str | None,
         current_time: str | None,
+        persona_overlay: str | None,
         media_blocks: list[dict[str, object]] | None,
-    ) -> list[dict[str, object]]:
-        """Attach storage listing, current time, and pending media to the latest user turn.
+    ) -> tuple[list[dict[str, object]], int]:
+        """Attach turn-local context to the latest user turn.
 
-        The listing and time go in as a synthetic user message right before
-        the most recent user turn so the cacheable system-prompt prefix stays
-        stable. Media blocks are prepended to the latest user message's
-        content, promoting plain text into a content-block list when needed.
+        Returns ``(messages, stable_prefix_end)`` where ``stable_prefix_end``
+        is the exclusive index up to which the prefix should be cache-stable
+        across turns: everything before the synthetic injection (when one was
+        added) or before the latest user message (when nothing was injected).
+
+        The synthetic message carries ``<current_time>``,
+        ``<storage_listing>``, and ``<persona>``; it goes in right before
+        the most recent user turn so the cacheable system-prompt prefix
+        stays stable. Media blocks are prepended to the latest user
+        message's content, promoting plain text into a content-block list
+        when needed.
         """
-        if not listing and not current_time and not media_blocks:
-            return messages
         last_user_idx = next(
             (i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"),
             None,
         )
-        if last_user_idx is None:
-            return messages
+        persona_text = (persona_overlay or "").strip() or None
+        has_synthetic = bool(listing or current_time or persona_text)
+        if last_user_idx is None or (not has_synthetic and not media_blocks):
+            return list(messages), last_user_idx if last_user_idx is not None else len(messages)
+
         out = list(messages)
         if media_blocks:
             user_msg = dict(out[last_user_idx])
@@ -315,18 +328,25 @@ class AgentLoop:
             else:
                 user_msg["content"] = [*media_blocks, {"type": "text", "text": existing}]
             out[last_user_idx] = user_msg
-        if listing or current_time:
-            parts: list[str] = []
-            if current_time:
-                parts.append(f"<current_time>{current_time}</current_time>")
-            if listing:
-                parts.append(f"<storage_listing>\n{listing}\n</storage_listing>")
-            ctx_msg: dict[str, object] = {
-                "role": "user",
-                "content": "\n".join(parts),
-            }
-            out.insert(last_user_idx, ctx_msg)
-        return out
+
+        if not has_synthetic:
+            return out, last_user_idx
+
+        parts: list[str] = []
+        if current_time:
+            parts.append(f"<current_time>{current_time}</current_time>")
+        if listing:
+            parts.append(f"<storage_listing>\n{listing}\n</storage_listing>")
+        if persona_text:
+            parts.append(f"<persona>\n{persona_text}\n</persona>")
+        ctx_msg: dict[str, object] = {
+            "role": "user",
+            "content": "\n".join(parts),
+        }
+        out.insert(last_user_idx, ctx_msg)
+        # After insert, the synthetic message sits at last_user_idx and the
+        # stable prefix is everything strictly before it.
+        return out, last_user_idx
 
     @staticmethod
     def _last_user_event_index(events: list[ConversationEvent]) -> int:
@@ -519,12 +539,14 @@ class AgentLoop:
         if event.action == "reset":
             session.clear()
             personalities.clear_personality(self.workspace_path, addr)
+            self.cache_monitor.forget(addr)
             state.pending_system_events.clear()
             state.tool_call_trace = []
             state.iteration_count = 0
             logger.info(f"Session reset for {addr}")
         elif event.action == "forget":
             session.clear()
+            self.cache_monitor.forget(addr)
             state.pending_system_events.clear()
             state.tool_call_trace = []
             state.iteration_count = 0

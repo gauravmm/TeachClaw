@@ -56,6 +56,7 @@ from benchclaw.bus import (
     MessageBus,
     OutboundMessage,
     SessionControlEvent,
+    SystemMessageEvent,
     ToolCallTrace,
     TypingEvent,
 )
@@ -476,6 +477,25 @@ class TelegramChannel(BaseChannel):
         self._auth_limiter.record_success(user_key)
         await msg.reply_text("Authenticated. Ask me anything.")
 
+    async def _announce_persona_switch(
+        self, addr: MessageAddress, chosen: personalities.Personality
+    ) -> None:
+        """Mark the persona switch in conversation history.
+
+        The system prompt now leaves persona out (it lives in the synthetic
+        tail message instead), so the only durable record of when a switch
+        happened sits in the session as a SystemEvent.
+        """
+        await self.bus.publish_inbound(
+            addr,
+            SystemMessageEvent(
+                content=(
+                    f"User switched persona to {chosen.label}. Earlier assistant "
+                    f"turns used a different voice; adopt the new persona from now on."
+                )
+            ),
+        )
+
     async def _cmd_personality(self, update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._gate(update):
             return
@@ -492,6 +512,7 @@ class TelegramChannel(BaseChannel):
                 names = ", ".join(p.name for p in personalities.all_personalities())
                 await msg.reply_text(f"Unknown personality. Pick one of: {names}.")
                 return
+            await self._announce_persona_switch(addr, chosen)
             await msg.reply_text(f"Personality set to {chosen.label}.")
             return
 
@@ -522,6 +543,7 @@ class TelegramChannel(BaseChannel):
         if chosen is None:
             await query.edit_message_text("Unknown personality.")
             return
+        await self._announce_persona_switch(addr, chosen)
         await query.edit_message_text(f"Personality set to {chosen.label}.")
 
     async def _cmd_cite(self, update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
