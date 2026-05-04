@@ -154,6 +154,8 @@ hunting for `/personality` in the menu.
 
 ## Open questions
 
+TODO: I want an Inline keyboard for the examples, including an option to dismiss.
+
 - **Inline keyboard for the examples?** Telegram supports inline
   keyboards with callback buttons (we already use them for
   `/personality`). Tapping a button could populate the chat input
@@ -166,15 +168,15 @@ hunting for `/personality` in the menu.
   carries the example prompts, `/help` could either (a) point at
   `/start` ("send /start for examples"), (b) duplicate the example
   block, or (c) stay terse and command-focused. (a) keeps a single
-  source of truth.
+  source of truth. TODO: (a) is fine, you can also mention /clear and /forgetme
 - **Discoverability hint after first citation.** The
   `seen_first_citation` flag in `_UserState` already sends a one-shot
   "(react ❤ to any reply for sources)" the first time a reply
   contains a citation. With the post-auth welcome already mentioning
   the ❤ reaction, this nudge is now redundant on the first reply but
   still useful if the welcome was skipped (cold `/auth`). Keep it
-  for now; revisit if it's noisy.
+  for now; revisit if it's noisy. TODO: Keep the nudge.
 - **Personality preview in the welcome?** A nicer demo would show
   the *same* prompt answered in two voices. Out of scope for the
   welcome message, but a `/demo` command that takes a fixed prompt
-  through two personas would be a fun follow-up.
+  through two personas would be a fun follow-up. TODO: drop this.
