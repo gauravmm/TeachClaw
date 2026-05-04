@@ -163,6 +163,74 @@ Canonical design in **`spec/TELEGRAM.md`**.
   — vLLM's `/metrics` endpoint exposes aggregate prefix-cache stats
   but not per-request fields. Revisit if that changes.
 
+### Citation / reaction-trace UX polish
+- [ ] When the bot answers a `SOURCES_REACTION` (❤️) or
+  `TRACE_REACTION` (🔥), send the response as a Telegram **reply** to
+  the originating bot message rather than as a standalone message in
+  the chat. Pass `reply_to_message_id=message_id` (and likely
+  `allow_sending_without_reply=True` so the call doesn't fail if the
+  original was deleted) on every `bot.send_message` call inside
+  `_reaction_sources` and `_reaction_trace`. Touches `_safe_send_text`
+  — that helper currently doesn't accept a reply-target, so either
+  give it an optional `reply_to_message_id` parameter or call
+  `bot.send_message` directly from those two handlers.
+
+### Citation system — how it works (reference)
+End-to-end map of the citation/reaction plumbing, captured here so
+future agents don't have to grep the code. Status: channel side is
+fully wired and tested implicitly via the dispatch path; nothing
+actually emits citations yet because the RAG `search` tool isn't
+wired.
+
+1. **Emission (model side, NOT WIRED).** Once `search` returns chunks
+   with IDs, the model wraps source-bearing claims in
+   `<citation id="chunk_42">short claim text</citation>`. The system
+   prompt will need a worked example so a small model emits the tag
+   reliably. Today no `<citation>` tags appear in any reply.
+2. **Stripping (channel, wired).** `_strip_citations`
+   (`benchclaw/channels/telegrm.py`) runs on every outbound message.
+   Regex `<citation\s+id=\"([^\"]+)\">(.*?)</citation>` matches each
+   tag. Returns `(cleaned_text, citations)` where the text has tags
+   removed (only the inner claim survives for the user to read) and
+   citations is `[{"id": "chunk_42", "claim": "..."}]` in document
+   order. Called from `send`.
+3. **Per-message storage (wired).** `_record_message_map` stashes the
+   citation list under the Telegram `message_id` of the *first* sent
+   chunk (long replies split into multiple messages but the map keys
+   only on the first). `_MessageMapEntry` carries
+   `{citations, tool_calls, created_at, expired}`. Tool calls ride
+   along in the same map entry. TTL is 24h; past TTL the entry is
+   tombstoned (citations cleared, `expired=True`) instead of deleted
+   so reactions can distinguish "expired" from "untracked." Hard cap
+   `_MESSAGE_MAP_HARD_CAP = 1000` per user — oldest evicted first
+   (tombstones go before live entries because they're older).
+   `/clear` and `/forgetme` wipe the whole map.
+4. **Reaction-driven retrieval (wired).** `SOURCES_REACTION` (❤️) →
+   `_reaction_sources`; `TRACE_REACTION` (🔥) → `_reaction_trace`,
+   both via `_dispatch_reaction`. Three branches per reaction:
+     - `entry is None` → "I don't have a record of that message."
+     - `entry.expired` → "Sources/Trace … have expired."
+     - live entry, list empty → "That reply didn't cite any sources."
+       (the path you always see today since nothing emits citations)
+     - live entry with content → up to 5 citation lines or 10 tool
+       calls. For sources, the bot also calls `setMessageReaction` to
+       tap a ❤️ back on the user's reaction as visual ack.
+5. **User toggle (HALF-WIRED).** `/cite` flips `_UserState.cite` and
+   reports the new state, but **the flag is never read anywhere** —
+   `_strip_citations` always runs and there's no system-prompt branch
+   that conditions on it. Decide before lecture: wire it (inject a
+   system message into the agent loop when off: "do not emit
+   `<citation>` tags") or remove the command until RAG lands.
+6. **Discoverability hint.** First cited reply per session appends
+   `(react ❤️ to any reply for sources)`; tracked via
+   `seen_first_citation` so it never repeats within a session. Never
+   fires today because no reply carries citations.
+7. **Privacy boundary.** `message_map` lives on `_UserState`, keyed
+   per-chat. One user can never react to another user's bot replies
+   (different chat_id → different state object → no entry). The
+   reaction handler also looks up state by the reactor's chat_id,
+   not the message author's.
+
 # Progress
 
   TODO status:

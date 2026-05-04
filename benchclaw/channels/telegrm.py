@@ -818,13 +818,24 @@ class TelegramChannel(BaseChannel):
         st.rate_blocked_warned = False
         return True
 
-    async def _safe_send_text(self, chat_id: int, text: str) -> None:
+    async def _safe_send_text(
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        reply_to_message_id: int | None = None,
+    ) -> None:
         if not self._app:
             return
         try:
-            await self._app.bot.send_message(chat_id=chat_id, text=text)
+            kwargs: dict[str, Any] = {"chat_id": chat_id, "text": text}
+            if reply_to_message_id is not None:
+                kwargs["reply_to_message_id"] = reply_to_message_id
+                # Don't fail if the original was deleted in the meantime.
+                kwargs["allow_sending_without_reply"] = True
+            await self._app.bot.send_message(**kwargs)
         except Exception:
-            logger.debug("Failed to send rate-limit notice")
+            logger.debug("Failed to send text")
 
     # ---- outbound -- mermaid + citation aware -----------------------------
 
@@ -1071,6 +1082,10 @@ class TelegramChannel(BaseChannel):
         entry = st.message_map.get(message_id)
         if not self._app:
             return
+        # All replies are threaded onto the original bot message the user
+        # reacted on, so the response is anchored even after intervening
+        # chatter. allow_sending_without_reply on the helper handles the case
+        # where the original message has been deleted.
         if entry is None:
             # Either we never tracked this message (untracked / bot restart)
             # or the entry aged past the hard cap. Don't claim "expired" —
@@ -1079,25 +1094,28 @@ class TelegramChannel(BaseChannel):
                 chat_id,
                 "I don't have a record of that message. It may be from a previous "
                 "session or a message I didn't send.",
+                reply_to_message_id=message_id,
             )
             return
         if entry.expired:
             await self._safe_send_text(
                 chat_id,
                 "Sources for that reply have expired — ask again and I'll re-cite.",
+                reply_to_message_id=message_id,
             )
             return
         if not entry.citations:
             await self._safe_send_text(
                 chat_id,
                 "That reply didn't cite any sources.",
+                reply_to_message_id=message_id,
             )
             return
         lines = [
             f"[{i + 1}] {c.get('id', '?')}: {c.get('claim', '')[:200]}"
             for i, c in enumerate(entry.citations[:5])
         ]
-        await self._safe_send_text(chat_id, "\n".join(lines))
+        await self._safe_send_text(chat_id, "\n".join(lines), reply_to_message_id=message_id)
         try:
             from telegram import ReactionTypeEmoji
 
@@ -1116,13 +1134,20 @@ class TelegramChannel(BaseChannel):
                 chat_id,
                 "I don't have a record of that message. It may be from a previous "
                 "session or a message I didn't send.",
+                reply_to_message_id=message_id,
             )
             return
         if entry.expired:
-            await self._safe_send_text(chat_id, "Tool trace for that reply has expired.")
+            await self._safe_send_text(
+                chat_id,
+                "Tool trace for that reply has expired.",
+                reply_to_message_id=message_id,
+            )
             return
         if not entry.tool_calls:
-            await self._safe_send_text(chat_id, "No tool calls for that reply.")
+            await self._safe_send_text(
+                chat_id, "No tool calls for that reply.", reply_to_message_id=message_id
+            )
             return
         lines: list[str] = []
         for tc in entry.tool_calls[:10]:
@@ -1131,7 +1156,7 @@ class TelegramChannel(BaseChannel):
                 args_text = args_text[:119] + "…"
             result_text = "(pending)" if tc.result is None else tc.result[:120]
             lines.append(f"• {tc.name}({args_text}) → {result_text}")
-        await self._safe_send_text(chat_id, "\n".join(lines))
+        await self._safe_send_text(chat_id, "\n".join(lines), reply_to_message_id=message_id)
 
     # ---- misc -------------------------------------------------------------
 
