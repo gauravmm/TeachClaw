@@ -50,6 +50,7 @@ class ContextBuilder:
         chunk_elision_active: bool = False,
         profile_text: str | None = None,
         storage_path: str | None = None,
+        personality_overlay: str | None = None,
     ) -> str:
         system = platform.system()
         bootstrap_files = [
@@ -78,6 +79,7 @@ class ContextBuilder:
             chunk_elision_active=chunk_elision_active,
             profile_text=(profile_text or "").strip() or None,
             storage_path=storage_path,
+            personality_overlay=(personality_overlay or "").strip() or None,
         )
 
     def build_context(

@@ -12,6 +12,7 @@ from benchclaw.channels.manager import ChannelManager
 from benchclaw.config import ConfigManager
 from benchclaw.media import MediaRepository
 from benchclaw.providers.litellm_provider import LiteLLMProvider
+from benchclaw.providers.scripted import ScriptedProvider
 
 
 def run(args) -> None:
@@ -22,7 +23,15 @@ def run(args) -> None:
     bus = MessageBus()
 
     with ConfigManager(args.config) as config:
-        provider = LiteLLMProvider(config.provider)
+        if config.provider.name == "scripted":
+            fixture = config.provider.api_base or ""
+            if not fixture:
+                raise SystemExit(
+                    "provider.name=scripted requires provider.api_base set to a fixture path"
+                )
+            provider = ScriptedProvider.from_fixture(Path(fixture).expanduser())
+        else:
+            provider = LiteLLMProvider(config.provider)
 
         async def run():
             async with MediaRepository(config.workspace_path) as media_repo:

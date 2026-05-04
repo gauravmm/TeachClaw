@@ -19,6 +19,7 @@ from benchclaw.bus import (
     MessageAddress,
     MessageBus,
     OutboundMessage,
+    SessionControlEvent,
     SystemMessageEvent,
     ToolResultEvent,
     TypingEvent,
@@ -26,7 +27,7 @@ from benchclaw.bus import (
 from benchclaw.config import Config
 from benchclaw.media import MediaRepository
 from benchclaw.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from benchclaw import storage as storage_layout
+from benchclaw import personalities, storage as storage_layout
 from benchclaw.session import (
     AssistantEvent,
     ConversationEvent,
@@ -62,6 +63,11 @@ class _AddressState:
     iteration_count: int = 0
     pending_system_events: list[str] = field(default_factory=list)
     pending_media: list[str] = field(default_factory=list)
+    # Tool calls dispatched since the most recent user message, in order.
+    # Each entry: {"name": str, "arguments": dict, "result": str}.
+    # The channel may attach this to outgoing messages so a 🔍 reaction can
+    # surface a tool-call trace. Reset whenever a new user message arrives.
+    tool_call_trace: list[dict[str, object]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -256,6 +262,7 @@ class AgentLoop:
         pending_media: list[str] | None,
     ) -> list[dict[str, object]]:
         storage_root = storage_layout.storage_root(self.workspace_path, addr)
+        persona = personalities.read_personality(self.workspace_path, addr)
         prompt = self.context.build_system_prompt(
             self.tools.values(),
             addr.channel,
@@ -264,6 +271,7 @@ class AgentLoop:
             chunk_elision_active=self.config.compaction.elide_chunks_after_turn,
             profile_text=storage_layout.read_profile(self.workspace_path, addr),
             storage_path=str(storage_root),
+            personality_overlay=persona.overlay,
         )
         messages = session.render_llm_messages(
             prompt,
@@ -386,6 +394,14 @@ class AgentLoop:
         )
         return True
 
+    @staticmethod
+    def _truncate_for_trace(result: object, limit: int = 240) -> str:
+        text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+        text = text.replace("\n", " ").strip()
+        if len(text) > limit:
+            return text[: limit - 1] + "…"
+        return text
+
     async def _apply_llm_response(
         self,
         response: LLMResponse,
@@ -393,6 +409,7 @@ class AgentLoop:
         tracker: ToolCallTracker,
         call_ctx: ToolContext,
         addr: MessageAddress,
+        state: _AddressState,
     ) -> None:
         usage = response.usage
         logger.info(
@@ -421,13 +438,27 @@ class AgentLoop:
             for tc in response.tool_calls:
                 args_str = json.dumps(tc.arguments, ensure_ascii=False)
                 logger.info(f"Tool call (background): {tc.name}({args_str[:200]})")
+                state.tool_call_trace.append(
+                    {
+                        "id": tc.id,
+                        "name": tc.name,
+                        "arguments": tc.arguments,
+                        "result": None,
+                    }
+                )
                 task = asyncio.create_task(
                     self._run_tool_and_post(tc, call_ctx, addr),
                     name=f"tool-{tc.id[:8]}",
                 )
                 tracker.add(tc.id, tc.name, task)
             if content:
-                await self.bus.publish_outbound(OutboundMessage(address=addr, content=content))
+                await self.bus.publish_outbound(
+                    OutboundMessage(
+                        address=addr,
+                        content=content,
+                        metadata={"tool_calls": list(state.tool_call_trace)},
+                    )
+                )
             return
 
         if not content:
@@ -444,13 +475,50 @@ class AgentLoop:
         session.append(AssistantEvent(content=content))
         preview = content[:120] + "..." if len(content) > 120 else content
         logger.info(f"Response to {addr}: {preview}")
-        await self.bus.publish_outbound(OutboundMessage(address=addr, content=content))
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                address=addr,
+                content=content,
+                metadata={"tool_calls": list(state.tool_call_trace)},
+            )
+        )
 
     @staticmethod
     def _flush_pending_system_events(session: Session, state: _AddressState) -> None:
         for content in state.pending_system_events:
             session.append(SystemEvent(content=content))
         state.pending_system_events.clear()
+
+    def _apply_control_event(
+        self,
+        event: SessionControlEvent,
+        session: Session,
+        state: _AddressState,
+        addr: MessageAddress,
+    ) -> None:
+        if event.action == "reset":
+            session.clear()
+            personalities.clear_personality(self.workspace_path, addr)
+            state.pending_system_events.clear()
+            state.tool_call_trace = []
+            state.iteration_count = 0
+            logger.info(f"Session reset for {addr}")
+        elif event.action == "forget":
+            session.clear()
+            state.pending_system_events.clear()
+            state.tool_call_trace = []
+            state.iteration_count = 0
+            root = storage_layout.storage_root(self.workspace_path, addr)
+            if root.exists():
+                import shutil
+
+                try:
+                    shutil.rmtree(root)
+                    logger.info(f"Storage forgotten for {addr}: removed {root}")
+                except OSError as e:
+                    logger.error(f"Failed to remove storage for {addr}: {e}")
+        else:
+            logger.warning(f"Unknown SessionControlEvent action: {event.action!r}")
 
     def _apply_batch(
         self,
@@ -465,6 +533,10 @@ class AgentLoop:
 
         for result in batch.tool_results:
             tracker.handle_result(result, session)
+            for entry in state.tool_call_trace:
+                if entry.get("id") == result.tool_call_id:
+                    entry["result"] = self._truncate_for_trace(result.result)
+                    break
         if batch.tool_results and not tracker.pending:
             self._flush_pending_system_events(session, state)
             needs_llm = True
@@ -476,6 +548,9 @@ class AgentLoop:
             else:
                 session.append(SystemEvent(content=event.content))
                 needs_llm = True
+
+        for control in batch.control_events:
+            self._apply_control_event(control, session, state, addr)
 
         if batch.user_messages:
             start_typing = True
@@ -493,6 +568,7 @@ class AgentLoop:
             session.append(user_event)
             state.pending_media = list(user_event.media)
             state.iteration_count = 0
+            state.tool_call_trace = []
             needs_llm = True
 
         return _BatchApplication(needs_llm=needs_llm, start_typing=start_typing)
@@ -503,6 +579,7 @@ class AgentLoop:
         tracker: ToolCallTracker,
         call_ctx: ToolContext,
         addr: MessageAddress,
+        state: _AddressState,
         pending_media: list[str] | None = None,
     ) -> None:
         if pending_media is None:
@@ -516,7 +593,7 @@ class AgentLoop:
         response = await self._call_provider(addr, llm_messages)
         if response is None:
             return
-        await self._apply_llm_response(response, session, tracker, call_ctx, addr)
+        await self._apply_llm_response(response, session, tracker, call_ctx, addr, state)
 
     async def _address_loop(self, addr: MessageAddress) -> None:
         session = self.sessions.get(addr)
@@ -563,6 +640,7 @@ class AgentLoop:
                 tracker,
                 call_ctx,
                 addr,
+                state,
                 pending_media=state.pending_media,
             )
 

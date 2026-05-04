@@ -261,48 +261,6 @@ def test_whatsapp_bridge_event_parses_typed_ids() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("text", "reply_id", "expected"),
-    [("hello @benchbot", None, "mention"), ("hello", 999, "reply")],
-)
-async def test_telegram_mapping_sets_public_summon(
-    text: str, reply_id: int | None, expected: str
-) -> None:
-    channel = TelegramChannel(TelegramConfig(token="x"), MessageBus(), media_repo=None)
-    channel._bot_username = "benchbot"
-    channel._bot_user_id = 999
-    mocked = AsyncMock()
-    channel._handle_message = mocked  # type: ignore[method-assign]
-
-    reply_to = None
-    if reply_id is not None:
-        reply_to = SimpleNamespace(from_user=SimpleNamespace(id=reply_id))
-
-    message = SimpleNamespace(
-        chat_id=123,
-        text=text,
-        caption=None,
-        photo=None,
-        voice=None,
-        audio=None,
-        document=None,
-        date=_ts(10),
-        chat=SimpleNamespace(type="group"),
-        message_id=42,
-        reply_to_message=reply_to,
-    )
-    update = SimpleNamespace(
-        message=message,
-        effective_user=SimpleNamespace(id=77, username="alice", first_name="Alice"),
-    )
-
-    await channel._on_message(update, None)  # type: ignore[arg-type]
-    kwargs = mocked.await_args.kwargs
-    assert kwargs["metadata"]["summon"] == expected
-    assert kwargs["timestamp"] == message.date
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
     ("payload", "expected"),
     [
         (

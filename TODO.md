@@ -22,13 +22,18 @@ Canonical design in **`spec/COMPACTION.md`**.
 - [ ] Validate with the dummy-LLM harness once that lands (multi-turn sessions, summary handoff, post-compaction continuity).
 - [ ] Ensure the persisted summary is included in transcript dumps (Telegram observability work).
 
-### Dummy-LLM harness (testing prerequisite)
-- Add a deterministic fake provider behind the existing provider interface (`benchclaw/providers/`) that:
-  - Replays scripted responses / tool calls from a YAML or JSON fixture.
-  - Reports configurable `usage.total_tokens` so compaction triggers can be exercised.
-  - Supports a "balloon" mode that emits large outputs to force overflow.
-- Wire it into config so a lecture/test profile selects it without touching prod config.
-- Add tests that drive multi-turn sessions through the fake provider to validate: tool dispatch, compaction firing, summary handoff, post-compaction continuity, typing-indicator behaviour during long agent turns.
+### Dummy-LLM harness (testing prerequisite) — **DONE (awaiting test)**
+- [x] `benchclaw/providers/scripted.py`: `ScriptedProvider` replays a YAML/JSON
+      fixture's `responses:` list in order; past the end the last response
+      repeats. Each entry can carry `content`, `tool_calls`, `usage_total`,
+      `finish_reason`, and `balloon` (in chars).
+- [x] Wired in `__main__.py`: `provider.name = scripted` + `provider.api_base
+      = <fixture_path>` selects the harness without touching prod config.
+- [x] Sample fixture at `config/fixtures/scripted_demo.yaml`.
+- [x] Tests in `tests/test_scripted_provider.py` cover: in-order replay, tail
+      repeat, balloon inflation, fixture-required validation.
+- [ ] Drive multi-turn sessions end-to-end through the fake provider once the
+      Telegram surface is exercised manually (left as a follow-up).
 
 ### RAG integration (AI-in-business knowledge)
 - Implement the `search` / `fetch_doc` tool contract from lecture-knowledge `spec/ROUGH.md §2` (citation IDs + chunk metadata returned to the model).
@@ -57,19 +62,87 @@ Replaces the `memory/` folder convention entirely. Memory is just files in the c
 - Tests in `tests/test_filesystem_tools.py` cover: absolute paths rejected; `..` traversal outside storage rejected; `_admin/` access rejected; storage-root relative paths allowed; `skills/` and `common/` prefixes resolve under the workspace; common/ writes rejected; own-scratch writes allowed; cross-user scratch writes rejected.
 - [ ] `/forgetme` and `/reset` semantics land with the Telegram bot service work — the sandbox here is what makes them safe. Documented in `spec/TELEGRAM.md` and `spec/AUTH.md`.
 
-### Lecture customization
-- Adapt `workspace/AGENTS.md` style for classroom persona (replace OcelliBot framing, drop personal-assistant specifics like Notion clearinghouse, image annotation, memory-folder conventions that don't apply). Replace memory-folder guidance with the per-conversation storage model from the Storage layout section.
-- Trim the `memory_files` listing from `system_prompt.j2` — the per-conversation listing now lives in a tail turn, not the system prompt. Keep `bootstrap_files`; that's how AGENTS.md gets loaded into the system prompt.
-- Pick a per-class workspace layout so each session starts clean. This should be put in `workspace_default/`.
-- Personalities: implement `/personality` swapping the system prompt only (retrieval/tools unchanged). Initial set: `default`, `skeptical_cfo`, `vc_partner`, `mck_analyst`, `professor`. Per-user, persists for the session, cleared on `/reset`.
-- Encourage Mermaid diagrams in the lecture system prompt (value chains, 2x2s, sequence diagrams) — render path is specified in `spec/TELEGRAM.md`.
+### Lecture customization — **DONE (awaiting test)**
+- [x] `workspace_default/AGENTS.md` and `workspace/AGENTS.md` rewritten for the
+      classroom persona (no OcelliBot, no Notion, no memory-folder mentions).
+      Per-conversation storage instructions in their place.
+- [x] System prompt template gets a `personality_overlay` block; profile and
+      personality are read fresh each turn in `AgentLoop._build_prompt_and_messages`.
+- [x] `benchclaw/personalities.py`: `default`, `skeptical_cfo`, `vc_partner`,
+      `mck_analyst`, `professor`. Selection persists at
+      `storage/<channel>/<chat_id>/personality.txt`; `/reset` clears it.
+- [x] Mermaid encouraged in the new AGENTS.md with a worked example;
+      renderer lives at `benchclaw/rendering/mermaid.py` and the Telegram
+      channel post-processes blocks via `mmdc`.
 
-### Telegram bot service & lecture surface
-Canonical design in **`spec/TELEGRAM.md`** (slash commands, reply rendering with `<citation>` stripping, reaction dispatcher with 👀 sources / 🔍 tool-call trace, image input, Mermaid post-processor, rate limits, typing-indicator behaviour, observability).
+### Telegram bot service & lecture surface — **DONE (awaiting test)**
+Canonical design in **`spec/TELEGRAM.md`**.
 
-- Implement per the spec.
-- Agent loop must capture tool calls into the per-`message_id` map so the 🔍 reaction can dump them.
-- Mermaid renderer module: `benchclaw/rendering/mermaid.py`, channel-agnostic pure function `(source, theme) → PNG`.
+- [x] Slash commands wired: `/start`, `/help`, `/auth`, `/personality`,
+      `/cite`, `/reset`, `/forgetme`, `/sources`, `/scope` (last two stub
+      until RAG lands), and admin `/setsecret`, `/whoauthed`,
+      `/reload_corpus`, `/stats`. `setMyCommands` runs at startup with
+      admin-scope overrides for the prof.
+- [x] Auth gate sits in front of every command except `/start`, `/help`,
+      `/auth`, plus the non-command message handler. Wrong codes are rate
+      limited (5 fails / 10 min, then 1 h lockout).
+- [x] DM-only enforcement: group chats get a one-line "DM-only" reply.
+- [x] Reaction dispatcher reads `message_reaction` updates and dispatches
+      via a generic emoji table. 👀 surfaces citations from the
+      per-`message_id` map (24 h TTL); 🔍 dumps the tool-call trace.
+      Citation tags are stripped from the displayed text in
+      `_strip_citations` and stored alongside tool calls in the map.
+- [x] Mermaid post-processor: `benchclaw.rendering.mermaid` extracts
+      fenced `mermaid` blocks (max 2 per reply), shells out to `mmdc`,
+      caches by `sha256(source+theme)`. The Telegram channel splits the
+      reply at fence boundaries and posts photos in order; failures fall
+      back to the raw source. Heads-up: `mmdc` must be installed
+      (`npm install -g @mermaid-js/mermaid-cli`).
+- [x] Rate limits: 30 msg / 10 min soft cap (replies "take a breath"),
+      one-in-flight-per-user with the second message answered as "still
+      thinking…" until the typing indicator drops.
+- [x] Tool-call trace plumbed through `OutboundMessage.metadata.tool_calls`
+      from the agent loop; the channel records it on the per-`message_id`
+      map so the 🔍 reaction can replay it.
+- [x] `SessionControlEvent("reset"|"forget")` lets the channel ask the
+      agent loop to clear the in-memory session and (for `forget`) delete
+      the user's storage directory.
+- [ ] Image-input limits (1 per turn, downscale to 1024 px) — NOT YET
+      enforced in the channel; current code accepts 1 photo per message
+      but doesn't downscale.
+- [ ] Inline-keyboard "follow-ups" row — NOT YET emitted; the cheap
+      separate call for suggestions is deferred until the model surface
+      is settled.
+- [ ] Per-message log / observability dashboard — NOT YET wired beyond
+      logger lines.
 
-### Auth
-Canonical design in **`spec/AUTH.md`** (shared-secret session gate, per-user `auth.json` stores the matched code rather than a version number, rate-limited `/auth`, admin `/setsecret`/`/whoauthed`, integration with `/forgetme` and `/reset`).
+### Auth — **DONE (awaiting test)**
+- [x] `benchclaw/auth.py`: secret read/write at
+      `storage/_admin/secret.json`, marker read/write at
+      `storage/<channel>/<user>/auth.json` (stores the **matched code**,
+      not a version number — see `spec/AUTH.md`).
+- [x] Code generation in the lecture alphabet
+      `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`, length 6 by default.
+- [x] `AuthRateLimiter` keeps in-memory per-user failure counters
+      (5 / 10 min → 1 h lockout).
+- [x] Telegram channel `_gate` middleware lets `/start`, `/help`, `/auth`,
+      `/forgetme` through unauthenticated; everything else replies with
+      the one-line auth nudge. Admin commands additionally check the
+      caller's `user.id` against `TelegramConfig.admin_user_ids`.
+- [x] Tests in `tests/test_auth.py` cover round-trip, marker drift after
+      rotation, `authenticated_addresses` filtering, the rate limiter's
+      lockout-after-threshold behaviour.
+
+# Progress
+
+  TODO status:
+  - ✅ Logging removal — DONE (awaiting test)
+  - ✅ Compaction rebuild — DONE (awaiting test)
+  - ✅ Storage layout — DONE (awaiting test)
+  - ✅ Dummy-LLM harness — DONE (awaiting test)
+  - ✅ Lecture customization — DONE (awaiting test)
+  - ⬜ RAG integration — DEFERRED
+  - ✅ Telegram bot service — DONE (awaiting test); image downscale + inline follow-ups deferred
+  - ✅ Auth — DONE (awaiting test)
+
+Feel free to clobber workspace/ if you need to.

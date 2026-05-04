@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from benchclaw.agent.loop import AgentLoop, ToolCallTracker
+from benchclaw.agent.loop import AgentLoop, ToolCallTracker, _AddressState
 from benchclaw.agent.tools.base import ToolContext
 from benchclaw.bus import InboundMessage, MessageAddress, MessageBus, OutboundMessage
 from benchclaw.config import Config
@@ -88,6 +88,7 @@ async def test_process_llm_turn_sends_visible_response(tmp_path: Path) -> None:
             tracker=tracker,
             call_ctx=call_ctx,
             addr=addr,
+            state=_AddressState(),
         )
         outbound = await loop.bus.consume_outbound(channel="telegram")
 
@@ -130,6 +131,7 @@ async def test_process_llm_turn_records_tool_calls_as_events(tmp_path: Path) -> 
             tracker=tracker,
             call_ctx=call_ctx,
             addr=addr,
+            state=_AddressState(),
         )
         outbound = await loop.bus.consume_outbound(channel="telegram")
 
@@ -291,6 +293,7 @@ async def test_proactive_compaction_summarizes_when_estimate_exceeds_threshold(t
             tracker=tracker,
             call_ctx=call_ctx,
             addr=addr,
+            state=_AddressState(),
         )
 
     assert len(provider.calls) == 2, "expected one summarize call + one main call"
@@ -347,6 +350,7 @@ async def test_no_compaction_when_under_threshold(tmp_path: Path) -> None:
             tracker=tracker,
             call_ctx=call_ctx,
             addr=addr,
+            state=_AddressState(),
         )
 
     assert len(provider.calls) == 1, "no summarization expected when under threshold"

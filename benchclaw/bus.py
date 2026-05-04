@@ -85,6 +85,18 @@ class SystemMessageEvent:
     content: str
 
 
+@dataclass
+class SessionControlEvent:
+    """Out-of-band channel directive to the agent loop for one address.
+
+    `action="reset"` clears the in-memory session events. `action="forget"`
+    additionally deletes the user's storage directory recursively. The
+    channel publishes this for /reset and /forgetme respectively.
+    """
+
+    action: str  # "reset" | "forget"
+
+
 @dataclass(frozen=True)
 class TypingEvent:
     """Signal from the agent that typing state has changed for an address."""
@@ -102,7 +114,7 @@ class AttentionEvent:
 
 
 # All events that flow through bus.inbound[addr]
-AddressEvent = InboundMessage | ToolResultEvent | SystemMessageEvent
+AddressEvent = InboundMessage | ToolResultEvent | SystemMessageEvent | SessionControlEvent
 # All events that flow through bus.outbound[channel]
 OutboundEvent = OutboundMessage | TypingEvent | AttentionEvent
 
@@ -114,9 +126,15 @@ class InboundMessageBatch:
     tool_results: list[ToolResultEvent] = field(default_factory=list)
     system_events: list[SystemMessageEvent] = field(default_factory=list)
     user_messages: list[InboundMessage] = field(default_factory=list)
+    control_events: list[SessionControlEvent] = field(default_factory=list)
 
     def __bool__(self) -> bool:
-        return bool(self.tool_results or self.system_events or self.user_messages)
+        return bool(
+            self.tool_results
+            or self.system_events
+            or self.user_messages
+            or self.control_events
+        )
 
 
 class MessageBus:
@@ -197,6 +215,8 @@ class MessageBus:
                     batch.system_events.append(event)
                 case InboundMessage():
                     batch.user_messages.append(event)
+                case SessionControlEvent():
+                    batch.control_events.append(event)
         return batch
 
     async def publish_outbound(self, msg: OutboundEvent) -> None:
