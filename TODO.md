@@ -40,7 +40,6 @@ Canonical design in **`spec/COMPACTION.md`**.
 - Hybrid retriever: BM25 + dense, hybrid-scored. Decide whether the index ships in-repo, behind an HTTP service, or via MCP.
 - Citation emission: model wraps source-bearing claims in `<citation id="chunk_42">…short claim…</citation>` tags. Channel-agnostic; the Telegram channel strips the tags from the displayed text and keeps a per-message map from claim → chunk_id for the reaction-driven sources flow (see `spec/TELEGRAM.md`). System prompt must include a worked example so small Gemma emits the tag reliably. Per-user `cite` toggle controls whether the model emits citations at all.
 - Persist `last_retrieval` (chunk IDs) on session state and keep a per-`message_id` map of `{citations, raw_chunks, tool_calls}` with a 24h TTL so users can react to a past message and get the sources or tool-call trace back.
-- Admin `/reload_corpus` to re-index from disk without restarting the bot.
 - Companion lookup tools (sit alongside the curated corpus, not inside the retrieval ranking):
   - `wiki_lookup(query)` against Wikipedia — `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=<q>&format=json` for search, `https://en.wikipedia.org/api/rest_v1/page/summary/<title>` for ~200-word lead extract + canonical URL + thumbnail, `/api/rest_v1/page/html/<title>` or `/page/wikitext/<title>` for the full body. Free, no auth, just a UA header. Sturdy fallback for "who is X / what is Y" queries the corpus doesn't cover; citations are clean (CC BY-SA + canonical URL).
   - `brave_search(query)` for the open-web fallback (recent news, niche docs not in the corpus). Results aren't curated — model must surface a "open-web result, may be unreliable" disclaimer when citing these.
@@ -60,7 +59,7 @@ Replaces the `memory/` folder convention entirely. Memory is just files in the c
 - [x] Dropped `memory_files` from `system_prompt.j2` and `memory_dir` from `ContextBuilder`.
 - [x] `AgentLoop._address_loop` calls `storage_layout.ensure_user_dirs(workspace, addr)` on entry; constructs the `call_ctx` with sandbox fields populated.
 - Tests in `tests/test_filesystem_tools.py` cover: absolute paths rejected; `..` traversal outside storage rejected; `_admin/` access rejected; storage-root relative paths allowed; `skills/` and `common/` prefixes resolve under the workspace; common/ writes rejected; own-scratch writes allowed; cross-user scratch writes rejected.
-- [ ] `/forgetme` and `/reset` semantics land with the Telegram bot service work — the sandbox here is what makes them safe. Documented in `spec/TELEGRAM.md` and `spec/AUTH.md`.
+- [ ] `/forgetme` and `/clear` semantics land with the Telegram bot service work — the sandbox here is what makes them safe. Documented in `spec/TELEGRAM.md` and `spec/AUTH.md`.
 
 ### Lecture customization — **DONE (awaiting test)**
 - [x] `workspace_default/AGENTS.md` and `workspace/AGENTS.md` rewritten for the
@@ -70,7 +69,7 @@ Replaces the `memory/` folder convention entirely. Memory is just files in the c
       personality are read fresh each turn in `AgentLoop._build_prompt_and_messages`.
 - [x] `benchclaw/personalities.py`: `default`, `skeptical_cfo`, `vc_partner`,
       `mck_analyst`, `professor`. Selection persists at
-      `storage/<channel>/<chat_id>/personality.txt`; `/reset` clears it.
+      `storage/<channel>/<chat_id>/personality.txt`; `/clear` clears it.
 - [x] Mermaid encouraged in the new AGENTS.md with a worked example;
       renderer lives at `benchclaw/rendering/mermaid.py` and the Telegram
       channel post-processes blocks via `mmdc`.
@@ -79,9 +78,9 @@ Replaces the `memory/` folder convention entirely. Memory is just files in the c
 Canonical design in **`spec/TELEGRAM.md`**.
 
 - [x] Slash commands wired: `/start`, `/help`, `/auth`, `/personality`,
-      `/cite`, `/reset`, `/forgetme`, `/sources`, `/scope` (last two stub
-      until RAG lands), and admin `/setsecret`, `/whoauthed`,
-      `/reload_corpus`, `/stats`. `setMyCommands` runs at startup with
+      `/cite`, `/clear`, `/forgetme`, `/sources`, `/scope` (last two stub
+      until RAG lands), and admin `/setsecret`, `/whoauthed`, `/stats`.
+      `setMyCommands` runs at startup with
       admin-scope overrides for the prof.
 - [x] Auth gate sits in front of every command except `/start`, `/help`,
       `/auth`, plus the non-command message handler. Wrong codes are rate
@@ -156,7 +155,7 @@ Canonical design in **`spec/TELEGRAM.md`**.
       (system) or the message index, role, and content preview
       (history). Repeated identical fingerprints are de-duplicated per
       address.
-- [x] Forgotten on `/reset` and `/forgetme` so a wiped session starts
+- [x] Forgotten on `/clear` and `/forgetme` so a wiped session starts
       with a fresh snapshot.
 - Open question: does vLLM expose per-request prefix-cache hit/miss
   stats? If so, extend `LLMResponse.usage` to carry them and log the

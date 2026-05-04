@@ -225,7 +225,7 @@ _PUBLIC_COMMANDS: tuple[BotCommand, ...] = (
     BotCommand("auth", "Authenticate with the code from the slide"),
     BotCommand("personality", "Switch reply persona"),
     BotCommand("cite", "Toggle inline citations on/off"),
-    BotCommand("reset", "Clear conversation history for this user"),
+    BotCommand("clear", "Clear conversation history"),
     BotCommand("forgetme", "Delete your storage and re-auth"),
     BotCommand("sources", "List available corpora (when wired)"),
     BotCommand("scope", "Restrict retrieval (when wired)"),
@@ -234,7 +234,6 @@ _PUBLIC_COMMANDS: tuple[BotCommand, ...] = (
 _ADMIN_COMMANDS: tuple[BotCommand, ...] = _PUBLIC_COMMANDS + (
     BotCommand("setsecret", "Rotate the shared auth secret"),
     BotCommand("whoauthed", "List authenticated user IDs"),
-    BotCommand("reload_corpus", "Re-index the corpus from disk"),
     BotCommand("stats", "Active users, query count, retrieval latency"),
 )
 
@@ -320,13 +319,12 @@ class TelegramChannel(BaseChannel):
             "auth": self._cmd_auth,
             "personality": self._cmd_personality,
             "cite": self._cmd_cite,
-            "reset": self._cmd_reset,
+            "clear": self._cmd_clear,
             "forgetme": self._cmd_forgetme,
             "sources": self._cmd_sources,
             "scope": self._cmd_scope,
             "setsecret": self._cmd_setsecret,
             "whoauthed": self._cmd_whoauthed,
-            "reload_corpus": self._cmd_reload_corpus,
             "stats": self._cmd_stats,
         }
         for name, handler in cmds.items():
@@ -484,7 +482,7 @@ class TelegramChannel(BaseChannel):
             return
         text = (
             "I'm a small assistant for the AI-in-Business lecture.\n\n"
-            "Commands: /auth, /personality, /cite, /reset, /forgetme, /sources, /scope.\n"
+            "Commands: /auth, /personality, /cite, /clear, /forgetme, /sources, /scope.\n"
             f"React {SOURCES_REACTION} to one of my replies to see the source chunks; "
             f"react {TRACE_REACTION} to see the tool-call trace for that reply."
         )
@@ -608,7 +606,7 @@ class TelegramChannel(BaseChannel):
         st.cite = not st.cite
         await msg.reply_text(f"Inline citations: {'on' if st.cite else 'off'}.")
 
-    async def _cmd_reset(self, update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _cmd_clear(self, update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._gate(update):
             return
         msg = update.effective_message
@@ -686,16 +684,6 @@ class TelegramChannel(BaseChannel):
             await msg.reply_text("No authenticated users.")
             return
         await msg.reply_text(f"Authenticated ({len(ids)}): {', '.join(ids)}")
-
-    async def _cmd_reload_corpus(self, update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        msg = update.effective_message
-        user = update.effective_user
-        if not (msg and user):
-            return
-        if not self._is_admin(user.id):
-            await msg.reply_text("Admin command.")
-            return
-        await msg.reply_text("No corpus is wired up yet.")
 
     async def _cmd_stats(self, update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         msg = update.effective_message

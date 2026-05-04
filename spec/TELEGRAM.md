@@ -31,9 +31,8 @@ admin scope (per-user) for the prof.
 | `/sources`      | default | List available corpora and roughly how big each is|
 | `/scope`        | default | Restrict retrieval to one corpus, or `all` to clear|
 | `/cite`         | default | Toggle inline citations (on/off)                  |
-| `/reset`        | default | Clear conversation history for this user          |
+| `/clear`        | default | Clear conversation history for this user          |
 | `/forgetme`     | default | Delete the user's storage directory and re-auth   |
-| `/reload_corpus`| admin   | Re-index the corpus from disk                     |
 | `/setsecret`    | admin   | Rotate the shared auth secret (see `AUTH.md`)     |
 | `/whoauthed`    | admin   | List currently authenticated user IDs             |
 | `/stats`        | admin   | Active users, query count, retrieval latency      |
@@ -65,7 +64,7 @@ Lives under `storage/telegram/<user_id>/`:
 - `media/` — images the user has sent, plus any files the bot writes
   for them.
 
-`/forgetme` deletes this directory recursively. `/reset` does not touch
+`/forgetme` deletes this directory recursively. `/clear` does not touch
 files on disk.
 
 ### In-memory (per-user, session-scoped)

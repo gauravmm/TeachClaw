@@ -148,6 +148,6 @@ class PromptCacheMonitor:
         )
 
     def forget(self, addr: MessageAddress) -> None:
-        """Drop tracking state for an address (e.g. after /reset or /forgetme)."""
+        """Drop tracking state for an address (e.g. after /clear or /forgetme)."""
         self._last.pop(addr, None)
         self._warned.pop(addr, None)

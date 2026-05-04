@@ -1,7 +1,7 @@
 """Lecture personalities — system-prompt overlays only; tools/retrieval unchanged.
 
 The set is fixed and small; per-spec each user picks one and it persists for
-their session. /reset clears it. The selection is stored on disk under
+their session. /clear clears it. The selection is stored on disk under
 storage/<channel>/<chat_id>/personality.txt so it survives bot restart but
 is still wiped by /forgetme along with the rest of the user's sandbox.
 """

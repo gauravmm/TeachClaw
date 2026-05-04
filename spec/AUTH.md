@@ -139,7 +139,7 @@ require the caller to already be authenticated via the regular flow.
 
 - `/forgetme` deletes `storage/<channel>/<user_id>/` recursively, which
   removes `auth.json`. Re-auth required after.
-- `/reset` clears in-memory session state only (history, last_retrieval,
+- `/clear` clears in-memory session state only (history, last_retrieval,
   personality). Does not touch `auth.json`. The student stays
   authenticated.
 - A new `/setsecret` does not retroactively edit per-user `auth.json`

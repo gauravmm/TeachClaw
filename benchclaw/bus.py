@@ -105,7 +105,7 @@ class SessionControlEvent:
 
     `action="reset"` clears the in-memory session events. `action="forget"`
     additionally deletes the user's storage directory recursively. The
-    channel publishes this for /reset and /forgetme respectively.
+    channel publishes this for /clear and /forgetme respectively.
     """
 
     action: str  # "reset" | "forget"
