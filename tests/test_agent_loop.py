@@ -437,20 +437,6 @@ def test_validate_citations_with_no_kb_calls_marks_everything_bad() -> None:
     assert bad_refs == [1]
 
 
-def test_corpora_in_kb_result_picks_out_distinct_tags() -> None:
-    text = (
-        '{"id": "a", "corpus": "consulting", "title": "x"}\n'
-        '{"id": "b", "corpus": "memes", "title": "y.jpg"}\n'
-        '{"id": "c", "corpus": "consulting", "title": "z"}'
-    )
-    assert AgentLoop._corpora_in_kb_result(text) == {"consulting", "memes"}
-
-
-def test_corpora_in_kb_result_returns_empty_on_unparseable() -> None:
-    assert AgentLoop._corpora_in_kb_result("not json") == set()
-    assert AgentLoop._corpora_in_kb_result(["list", "not", "string"]) == set()
-
-
 def test_validate_citations_accepts_ids_from_earlier_turn() -> None:
     # A kb__search ran in turn 1; turn 2 has a new user message and the
     # current-turn trace would be empty. Validation must walk the full
