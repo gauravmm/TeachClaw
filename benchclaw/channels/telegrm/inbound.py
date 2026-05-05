@@ -14,7 +14,7 @@ import time
 from typing import TYPE_CHECKING
 
 from loguru import logger
-from telegram import Update
+from telegram import Message, MessageEntity, Update
 from telegram.ext import ContextTypes
 
 from benchclaw.bus import MediaMetadata, MessageAddress
@@ -124,6 +124,7 @@ async def on_message(
         "username": user.username,
         "sender_label": user.first_name or user.username,
         "is_group": chat.type != "private",
+        "summon": detect_summon(message, channel._bot_username, channel._bot_user_id),
     }
 
     await channel._handle_message(
@@ -135,6 +136,29 @@ async def on_message(
         metadata=message_metadata,
         timestamp=message.date,
     )
+
+
+def detect_summon(
+    message: Message, bot_username: str | None, bot_user_id: int | None
+) -> str | None:
+    """Return 'reply' if the message replies to one of the bot's messages,
+    'mention' if the bot is @-mentioned (plain @username or text-mention
+    targeting the bot's user id), else None. The attention filter promotes
+    a queued group message into a forwarded one only when this is set.
+    """
+    if bot_user_id and message.reply_to_message and message.reply_to_message.from_user:
+        if message.reply_to_message.from_user.id == bot_user_id:
+            return "reply"
+    text = message.text or message.caption or ""
+    bot_handle = f"@{bot_username}".lower() if bot_username else None
+    for entity in message.entities or message.caption_entities or ():
+        if entity.type == MessageEntity.MENTION and bot_handle:
+            if text[entity.offset : entity.offset + entity.length].lower() == bot_handle:
+                return "mention"
+        elif entity.type == MessageEntity.TEXT_MENTION and entity.user and bot_user_id:
+            if entity.user.id == bot_user_id:
+                return "mention"
+    return None
 
 
 def allow_rate(

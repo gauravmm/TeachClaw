@@ -7,7 +7,7 @@ Files (one concern each):
 * ``state``           — per-user state, reply records, segment dataclasses,
                         reaction constants
 * ``markdown_html``   — markdown → Telegram-HTML conversion + chunking
-* ``auth_gate``       — DM-only + auth gating for inbound updates
+* ``auth_gate``       — auth gating + group-eligibility / admin helpers
 * ``inbound``         — inbound message handler + soft rate-limit
 * ``outbound``        — send pipeline (plan → dispatch → record)
 * ``reactions``       — reaction-emoji handlers (sources / trace)

@@ -50,7 +50,10 @@ class TelegramChannel(BaseChannel):
       ``benchclaw.rendering.mermaid`` and posted in order.
     - Rate limits: one in-flight per user (tied to the typing indicator),
       30 msgs/10min soft cap.
-    - DM-only: messages from group chats are refused with a one-line note.
+    - Group support: spec/GROUP_CHATS.md. Group chats use the same
+      MessageAddress as DMs (one shared session per chat_id); auth in
+      groups requires at least one of ``admin_user_ids`` to be a
+      Telegram chat admin (checked at /auth time only).
     """
 
     name = "telegram"

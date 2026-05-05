@@ -197,11 +197,68 @@ class AgentLoop:
 
         try:
             self.debug_dump_path.write_text(
-                json.dumps(messages, ensure_ascii=False, indent=2),
+                json.dumps(
+                    [self._inflate_for_dump(m) for m in messages],
+                    ensure_ascii=False,
+                    indent=2,
+                ),
                 encoding="utf-8",
             )
         except Exception as e:
             logger.warning(f"Failed to write debug dump: {e}")
+
+    @staticmethod
+    def _try_parse_json_string(value: object) -> object:
+        """Inflate a string that's actually JSON or newline-delimited JSON.
+
+        Tool results and tool-call arguments live in OpenAI-shaped messages
+        as opaque strings, which makes the debug dump unreadable: every
+        quote and newline gets re-escaped on the outer ``json.dumps``. For
+        the dump we walk those strings and substitute the parsed value
+        when parsing succeeds; the wire messages stay untouched.
+        """
+        if not isinstance(value, str):
+            return value
+        stripped = value.strip()
+        if not stripped or stripped[0] not in "{[":
+            return value
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            pass
+        # JSONL fallback for tools that emit one record per line (kb__).
+        lines = [ln for ln in stripped.splitlines() if ln.strip()]
+        if len(lines) < 2:
+            return value
+        parsed: list[object] = []
+        for ln in lines:
+            try:
+                parsed.append(json.loads(ln))
+            except json.JSONDecodeError:
+                return value
+        return parsed
+
+    @classmethod
+    def _inflate_for_dump(cls, message: dict[str, object]) -> dict[str, object]:
+        out = dict(message)
+        if out.get("role") == "tool":
+            out["content"] = cls._try_parse_json_string(out.get("content"))
+        tool_calls = out.get("tool_calls")
+        if isinstance(tool_calls, list):
+            inflated_calls: list[object] = []
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    inflated_calls.append(tc)
+                    continue
+                tc_copy = dict(tc)
+                fn = tc_copy.get("function")
+                if isinstance(fn, dict):
+                    fn_copy = dict(fn)
+                    fn_copy["arguments"] = cls._try_parse_json_string(fn_copy.get("arguments"))
+                    tc_copy["function"] = fn_copy
+                inflated_calls.append(tc_copy)
+            out["tool_calls"] = inflated_calls
+        return out
 
     @staticmethod
     def _collapse_user_messages(messages: list[InboundMessage]) -> UserEvent:
@@ -285,6 +342,8 @@ class AgentLoop:
             chunk_elision_active=self.config.compaction.elide_chunks_after_turn,
             profile_text=storage_layout.read_profile(self.workspace_path, addr),
             storage_path=str(storage_root.expanduser().resolve()),
+            model=self.config.model,
+            context_window=self.config.context_window,
         )
         messages = session.render_llm_messages(prompt, self._render_options())
         listing = storage_layout.listing_for_user(self.workspace_path, addr)
