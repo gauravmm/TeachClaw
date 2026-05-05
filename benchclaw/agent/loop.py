@@ -89,6 +89,12 @@ class _AddressState:
     # for citing a kb id that wasn't in the trace. Capped to keep one bad
     # reply from looping forever.
     citation_retries: int = 0
+    # Set when we've just queued an inbound SystemMessageEvent that will
+    # trigger another LLM call (e.g. a citation pushback). The address
+    # loop honors this by skipping its top-of-loop typing=False publish
+    # so the bubble doesn't drop between the rejected reply and the
+    # follow-up call.
+    expecting_followup_turn: bool = False
 
 
 _CITATION_MAX_RETRIES = 1
@@ -624,6 +630,7 @@ class AgentLoop:
                     f"Invalid citations from {addr}: {', '.join(bad_ids)} "
                     f"(retry {state.citation_retries}/{_CITATION_MAX_RETRIES})"
                 )
+                state.expecting_followup_turn = True
                 await self.bus.publish_inbound(
                     addr,
                     SystemMessageEvent(
@@ -756,6 +763,7 @@ class AgentLoop:
             state.tool_call_trace = []
             state.iteration_count = 0
             state.citation_retries = 0
+            state.expecting_followup_turn = False
             logger.info(f"Session reset for {addr}")
         elif event.action == "forget":
             session.clear()
@@ -764,6 +772,7 @@ class AgentLoop:
             state.tool_call_trace = []
             state.iteration_count = 0
             state.citation_retries = 0
+            state.expecting_followup_turn = False
             root = storage_layout.storage_root(self.workspace_path, addr)
             if root.exists():
                 import shutil
@@ -882,10 +891,11 @@ class AgentLoop:
         state = _AddressState()
 
         while True:
-            if not tracker.pending:
+            if not tracker.pending and not state.expecting_followup_turn:
                 await self.bus.publish_outbound(TypingEvent(addr, is_typing=False))
 
             batch = await self.bus.consume_inbound_batch(address=addr)
+            state.expecting_followup_turn = False
             batch_result = self._apply_batch(batch, session, tracker, addr, state)
             if batch_result.start_typing:
                 await self.bus.publish_outbound(TypingEvent(addr, is_typing=True))

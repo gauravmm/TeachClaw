@@ -466,6 +466,32 @@ def test_append_unverified_postscript_singular_and_plural() -> None:
 
 
 @pytest.mark.asyncio
+async def test_invalid_citation_pushback_keeps_typing_indicator_on(tmp_path: Path) -> None:
+    """A pushback retry sets expecting_followup_turn so the address loop
+    skips its top-of-loop typing=False publish, leaving the bubble on
+    until the second LLM call completes."""
+    bad_response = LLMResponse(content='Answer <citation id="ghost">claim</citation>.')
+    loop = _make_loop(tmp_path, bad_response)
+    addr = MessageAddress("telegram", "1")
+    session = Session(addr)
+    session.append(UserEvent(content="hi"))
+    tracker = ToolCallTracker()
+    state = _AddressState()
+
+    async with loop.tools:
+        call_ctx = ToolContext(
+            workspace=loop.tools._master_ctx.workspace,
+            bus=loop.bus,
+            media_repo=loop.media_repo,
+            address=addr,
+            background_tasks=tracker.tasks,
+        )
+        await loop._apply_llm_response(bad_response, session, tracker, call_ctx, addr, state)
+
+    assert state.expecting_followup_turn is True
+
+
+@pytest.mark.asyncio
 async def test_invalid_citation_triggers_retry_then_postscript(tmp_path: Path) -> None:
     """Bad citation → one retry → second bad reply ships with postscript."""
     bad_response = LLMResponse(content='Answer <citation id="ghost">claim</citation>.')
