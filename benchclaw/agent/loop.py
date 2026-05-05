@@ -75,6 +75,19 @@ _CITATION_REMINDER = (
     "`id` field verbatim from each record. Untagged paraphrase of kb "
     "content is not acceptable. The closing </citation> is required."
 )
+# kb records with corpus="memes" carry the filename verbatim in their
+# `title` field. To deliver a meme, the model should call send_media with
+# path memes/<title>, not paste the filename into prose. Memes don't take
+# <citation> markers either, so we suppress the citation reminder for
+# meme-only batches.
+_MEME_CORPUS = "memes"
+_MEME_REMINDER = (
+    "Some kb results came from the 'memes' corpus. To deliver a meme, "
+    'call the send_media tool with path "memes/<title>" copying the '
+    "record's `title` field verbatim (the title is the filename). Memes "
+    "do NOT take <citation> markers — send the image with a brief caption "
+    "naming the joke and how it relates to the lecture topic."
+)
 
 
 @dataclass
@@ -662,6 +675,34 @@ class AgentLoop:
         )
 
     @staticmethod
+    def _corpora_in_kb_result(result: object) -> set[str]:
+        """Return the set of ``corpus`` values seen in a kb tool result.
+
+        kb tools emit one or more JSON objects concatenated in the result
+        string (not a JSON array), each with a ``corpus`` field. Walk the
+        text with a JSONDecoder and collect each corpus tag — used by
+        :meth:`_apply_batch` to decide whether to drop the meme reminder.
+        Best-effort: malformed fragments yield an empty set, which the
+        caller treats as "fall back to citation reminder".
+        """
+        if not isinstance(result, str):
+            return set()
+        corpora: set[str] = set()
+        decoder = json.JSONDecoder()
+        text = result.lstrip()
+        while text:
+            try:
+                obj, end = decoder.raw_decode(text)
+            except json.JSONDecodeError:
+                break
+            if isinstance(obj, dict):
+                corpus = obj.get("corpus")
+                if isinstance(corpus, str):
+                    corpora.add(corpus)
+            text = text[end:].lstrip()
+        return corpora
+
+    @staticmethod
     def _session_kb_records(events: list[ConversationEvent]) -> dict[str, dict]:
         """Collect kb records from every kb-tool ToolEvent in the session.
 
@@ -797,6 +838,7 @@ class AgentLoop:
         start_typing = False
 
         nudge_citations = False
+        nudge_memes = False
         for result in batch.tool_results:
             tracker.handle_result(result, session)
             for entry in state.tool_call_trace:
@@ -804,13 +846,23 @@ class AgentLoop:
                     entry.result = self._stringify_tool_result(result.result)
                     break
             if any(result.tool_name.startswith(p) for p in _CITATION_TOOL_PREFIXES):
-                nudge_citations = True
+                corpora = self._corpora_in_kb_result(result.result)
+                if _MEME_CORPUS in corpora:
+                    nudge_memes = True
+                # Fire the citation reminder if any non-meme record is
+                # present, or if we couldn't parse the result at all
+                # (safe default — most kb content is text that should
+                # be cited).
+                if (corpora - {_MEME_CORPUS}) or not corpora:
+                    nudge_citations = True
         if batch.tool_results and not tracker.pending:
             self._flush_pending_system_events(session, state)
             # One reminder per batch is enough: dropping it once right before
             # the LLM call is what makes the rule "current" in context.
             if nudge_citations:
                 session.append(SystemEvent(content=_CITATION_REMINDER))
+            if nudge_memes:
+                session.append(SystemEvent(content=_MEME_REMINDER))
             needs_llm = True
 
         for event in batch.system_events:
