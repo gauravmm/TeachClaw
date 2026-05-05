@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass, field
 from pathlib import Path
 
 from loguru import logger
@@ -14,6 +13,8 @@ from benchclaw import personalities
 from benchclaw import storage as storage_layout
 from benchclaw.agent.cache_monitor import PromptCacheMonitor
 from benchclaw.agent.context import build_system_prompt
+from benchclaw.agent.dump import dump_messages
+from benchclaw.agent.loop_state import AddressState, BatchApplication, ToolCallTracker
 from benchclaw.agent.tools.base import ToolContext
 from benchclaw.agent.tools.mcp_manager import MCPManager
 from benchclaw.agent.tools.registry import ToolRegistry
@@ -39,7 +40,6 @@ from benchclaw.session import (
     Session,
     SessionManager,
     SystemEvent,
-    ToolEvent,
     UserEvent,
 )
 from benchclaw.utils import now_aware
@@ -77,85 +77,7 @@ _CITATION_REMINDER = (
 )
 
 
-@dataclass
-class _AddressState:
-    iteration_count: int = 0
-    pending_system_events: list[str] = field(default_factory=list)
-    pending_media: list[str] = field(default_factory=list)
-    # Tool calls dispatched since the most recent user message, in order.
-    # Reset whenever a new user message arrives.
-    tool_call_trace: list[ToolCallTrace] = field(default_factory=list)
-    # How many times we've already pushed back on the model in this turn
-    # for citing a kb id that wasn't in the trace. Capped to keep one bad
-    # reply from looping forever.
-    citation_retries: int = 0
-    # Set when we've just queued an inbound SystemMessageEvent that will
-    # trigger another LLM call (e.g. a citation pushback). The address
-    # loop honors this by skipping its top-of-loop typing=False publish
-    # so the bubble doesn't drop between the rejected reply and the
-    # follow-up call.
-    expecting_followup_turn: bool = False
-
-
 _CITATION_MAX_RETRIES = 1
-
-
-@dataclass(frozen=True)
-class _BatchApplication:
-    needs_llm: bool = False
-    start_typing: bool = False
-
-
-class ToolCallTracker:
-    """Per-address tracker for in-flight background tool calls."""
-
-    def __init__(self) -> None:
-        self._in_flight: dict[str, str] = {}
-        self._tasks: dict[str, asyncio.Task] = {}
-
-    @property
-    def tasks(self) -> dict[str, asyncio.Task]:
-        return self._tasks
-
-    @property
-    def pending(self) -> bool:
-        return bool(self._in_flight)
-
-    def add(self, tool_call_id: str, tool_name: str, task: asyncio.Task) -> None:
-        self._in_flight[tool_call_id] = tool_name
-        self._tasks[tool_call_id] = task
-
-    def handle_interrupt(self, session: Session) -> None:
-        if not self._in_flight:
-            return
-        tool_list = ", ".join(f"{name} ({tid[:8]})" for tid, name in self._in_flight.items())
-        session.append(
-            SystemEvent(
-                content="The following tools are still executing in the background: "
-                f"{tool_list}. Their results will arrive as new events."
-            )
-        )
-        self._in_flight.clear()
-
-    def handle_result(self, event: ToolResultEvent, session: Session) -> bool:
-        self._tasks.pop(event.tool_call_id, None)
-        session.append(
-            ToolEvent(
-                content=event.result,
-                tool_call_id=event.tool_call_id,
-                tool_name=event.tool_name,
-            )
-        )
-        if event.tool_call_id in self._in_flight:
-            del self._in_flight[event.tool_call_id]
-            return not self._in_flight
-
-        session.append(
-            SystemEvent(
-                content=f"Background tool '{event.tool_name}' completed. Summarize the result for the user or take any necessary follow-up actions to achieve the goal."
-            )
-        )
-        return True
 
 
 class AgentLoop:
@@ -204,75 +126,6 @@ class AgentLoop:
             addr,
             ToolResultEvent(tool_call_id=tc.id, tool_name=tc.name, result=result),
         )
-
-    def _dump_messages(self, messages: list[dict[str, object]]) -> None:
-        if not self.debug_dump_path:
-            return
-
-        try:
-            self.debug_dump_path.write_text(
-                json.dumps(
-                    [self._inflate_for_dump(m) for m in messages],
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-        except Exception as e:
-            logger.warning(f"Failed to write debug dump: {e}")
-
-    @staticmethod
-    def _try_parse_json_string(value: object) -> object:
-        """Inflate a string that's actually JSON or newline-delimited JSON.
-
-        Tool results and tool-call arguments live in OpenAI-shaped messages
-        as opaque strings, which makes the debug dump unreadable: every
-        quote and newline gets re-escaped on the outer ``json.dumps``. For
-        the dump we walk those strings and substitute the parsed value
-        when parsing succeeds; the wire messages stay untouched.
-        """
-        if not isinstance(value, str):
-            return value
-        stripped = value.strip()
-        if not stripped or stripped[0] not in "{[":
-            return value
-        try:
-            return json.loads(stripped)
-        except json.JSONDecodeError:
-            pass
-        # JSONL fallback for tools that emit one record per line (kb__).
-        lines = [ln for ln in stripped.splitlines() if ln.strip()]
-        if len(lines) < 2:
-            return value
-        parsed: list[object] = []
-        for ln in lines:
-            try:
-                parsed.append(json.loads(ln))
-            except json.JSONDecodeError:
-                return value
-        return parsed
-
-    @classmethod
-    def _inflate_for_dump(cls, message: dict[str, object]) -> dict[str, object]:
-        out = dict(message)
-        if out.get("role") == "tool":
-            out["content"] = cls._try_parse_json_string(out.get("content"))
-        tool_calls = out.get("tool_calls")
-        if isinstance(tool_calls, list):
-            inflated_calls: list[object] = []
-            for tc in tool_calls:
-                if not isinstance(tc, dict):
-                    inflated_calls.append(tc)
-                    continue
-                tc_copy = dict(tc)
-                fn = tc_copy.get("function")
-                if isinstance(fn, dict):
-                    fn_copy = dict(fn)
-                    fn_copy["arguments"] = cls._try_parse_json_string(fn_copy.get("arguments"))
-                    tc_copy["function"] = fn_copy
-                inflated_calls.append(tc_copy)
-            out["tool_calls"] = inflated_calls
-        return out
 
     @staticmethod
     def _collapse_user_messages(messages: list[InboundMessage]) -> UserEvent:
@@ -550,7 +403,7 @@ class AgentLoop:
         tracker: ToolCallTracker,
         call_ctx: ToolContext,
         addr: MessageAddress,
-        state: _AddressState,
+        state: AddressState,
     ) -> None:
         usage = response.usage
         logger.info(
@@ -613,17 +466,16 @@ class AgentLoop:
                 ),
             )
             return
-        bad_ids, bad_refs = self._validate_citations(content, session.events)
+        bad_ids, bad_refs, kb_records = cit.validate_citations(content, session.events)
         if bad_ids:
             if state.citation_retries < _CITATION_MAX_RETRIES:
                 state.citation_retries += 1
                 # Keep the bad reply in history so the model sees what it
                 # produced; the system reminder critiques it directly.
                 session.append(AssistantEvent(content=content))
-                valid_ids = sorted(self._session_kb_records(session.events).keys())
                 valid_str = (
-                    ", ".join(valid_ids)
-                    if valid_ids
+                    ", ".join(sorted(kb_records))
+                    if kb_records
                     else "(none — call a kb tool first if you need to cite)"
                 )
                 logger.warning(
@@ -648,7 +500,7 @@ class AgentLoop:
                 f"retries: {', '.join(bad_ids)}; publishing with verifiability "
                 "postscript."
             )
-            content = self._append_unverified_postscript(content, bad_refs)
+            content = cit.unverified_postscript(content, bad_refs)
 
         session.append(AssistantEvent(content=content))
         preview = content[:120] + "..." if len(content) > 120 else content
@@ -659,69 +511,6 @@ class AgentLoop:
                 content=content,
                 metadata={"tool_calls": list(state.tool_call_trace)},
             )
-        )
-
-    @staticmethod
-    def _session_kb_records(events: list[ConversationEvent]) -> dict[str, dict]:
-        """Collect kb records from every kb-tool ToolEvent in the session.
-
-        We validate citations against the *full* session history rather than
-        the current-turn trace because the model can legitimately remember
-        an id from an earlier turn's kb__search. Render-time chunk elision
-        replaces the rendered tool content with a stub but leaves the
-        original event in the session, so this walk still finds the ids.
-        Compaction-with-summary is the one exception: events older than the
-        latest user message are replaced with a SummaryEvent, so any kb
-        ids cited from that pre-summary history will read as unverifiable.
-        """
-        trace = [
-            ToolCallTrace(
-                id=ev.tool_call_id,
-                name=ev.tool_name,
-                arguments={},
-                result=ev.content if isinstance(ev.content, str) else None,
-            )
-            for ev in events
-            if isinstance(ev, ToolEvent)
-        ]
-        return cit.extract_kb_records(trace)
-
-    @classmethod
-    def _validate_citations(
-        cls, content: str, events: list[ConversationEvent]
-    ) -> tuple[list[str], list[int]]:
-        """Find ``<citation>`` ids in the content that aren't in any kb result
-        seen in this session.
-
-        Returns ``(bad_ids, bad_refs)`` where ``bad_refs`` are the 1-indexed
-        reference numbers the user will see after :func:`strip_citations`
-        renders ``[N]`` markers — useful for telling the user *which*
-        citations are unverifiable. Both lists preserve first-appearance
-        order and contain no duplicates (``strip_citations`` already
-        dedupes by id).
-        """
-        _, citations = cit.strip_citations(content)
-        if not citations:
-            return [], []
-        valid = set(cls._session_kb_records(events).keys())
-        bad_ids: list[str] = []
-        bad_refs: list[int] = []
-        for idx, c in enumerate(citations, start=1):
-            if c.id not in valid:
-                bad_ids.append(c.id)
-                bad_refs.append(idx)
-        return bad_ids, bad_refs
-
-    @staticmethod
-    def _append_unverified_postscript(content: str, bad_refs: list[int]) -> str:
-        if not bad_refs:
-            return content
-        if len(bad_refs) == 1:
-            head = f"Citation [{bad_refs[0]}] is"
-        else:
-            head = f"Citations {', '.join(f'[{n}]' for n in bad_refs)} are"
-        return (
-            content.rstrip() + f"\n\n_{head} not automatically verifiable. Check claims carefully._"
         )
 
     def _prior_turn_was_terminal(self, session: Session) -> bool:
@@ -743,47 +532,50 @@ class AgentLoop:
         return False
 
     @staticmethod
-    def _flush_pending_system_events(session: Session, state: _AddressState) -> None:
+    def _flush_pending_system_events(session: Session, state: AddressState) -> None:
         for content in state.pending_system_events:
             session.append(SystemEvent(content=content))
+        state.pending_system_events.clear()
+
+    @staticmethod
+    def _reset_turn_state(state: AddressState) -> None:
+        """Clear per-turn counters and the in-flight tool trace.
+
+        Called whenever the session is starting fresh — new user message,
+        /clear, /forgetme. ``pending_media`` is owned by the user-message
+        path (it carries that turn's attachments) so it isn't cleared
+        here; callers handle it explicitly.
+        """
+        state.tool_call_trace = []
+        state.iteration_count = 0
+        state.citation_retries = 0
+        state.expecting_followup_turn = False
         state.pending_system_events.clear()
 
     def _apply_control_event(
         self,
         event: SessionControlEvent,
         session: Session,
-        state: _AddressState,
+        state: AddressState,
         addr: MessageAddress,
     ) -> None:
+        session.clear()
+        self.cache_monitor.forget(addr)
+        self._reset_turn_state(state)
         if event.action == "reset":
-            session.clear()
             personalities.clear_personality(self.workspace_path, addr)
-            self.cache_monitor.forget(addr)
-            state.pending_system_events.clear()
-            state.tool_call_trace = []
-            state.iteration_count = 0
-            state.citation_retries = 0
-            state.expecting_followup_turn = False
             logger.info(f"Session reset for {addr}")
-        elif event.action == "forget":
-            session.clear()
-            self.cache_monitor.forget(addr)
-            state.pending_system_events.clear()
-            state.tool_call_trace = []
-            state.iteration_count = 0
-            state.citation_retries = 0
-            state.expecting_followup_turn = False
-            root = storage_layout.storage_root(self.workspace_path, addr)
-            if root.exists():
-                import shutil
+            return
+        # action == "forget" — Literal type narrows here; pyright knows it.
+        root = storage_layout.storage_root(self.workspace_path, addr)
+        if root.exists():
+            import shutil
 
-                try:
-                    shutil.rmtree(root)
-                    logger.info(f"Storage forgotten for {addr}: removed {root}")
-                except OSError as e:
-                    logger.error(f"Failed to remove storage for {addr}: {e}")
-        else:
-            logger.warning(f"Unknown SessionControlEvent action: {event.action!r}")
+            try:
+                shutil.rmtree(root)
+                logger.info(f"Storage forgotten for {addr}: removed {root}")
+            except OSError as e:
+                logger.error(f"Failed to remove storage for {addr}: {e}")
 
     def _apply_batch(
         self,
@@ -791,8 +583,8 @@ class AgentLoop:
         session: Session,
         tracker: ToolCallTracker,
         addr: MessageAddress,
-        state: _AddressState,
-    ) -> _BatchApplication:
+        state: AddressState,
+    ) -> BatchApplication:
         needs_llm = False
         start_typing = False
 
@@ -845,13 +637,11 @@ class AgentLoop:
             )
             logger.info(f"Processing message from {addr}: {preview}")
             session.append(user_event)
+            self._reset_turn_state(state)
             state.pending_media = list(user_event.media)
-            state.iteration_count = 0
-            state.tool_call_trace = []
-            state.citation_retries = 0
             needs_llm = True
 
-        return _BatchApplication(needs_llm=needs_llm, start_typing=start_typing)
+        return BatchApplication(needs_llm=needs_llm, start_typing=start_typing)
 
     async def _process_llm_turn(
         self,
@@ -859,7 +649,7 @@ class AgentLoop:
         tracker: ToolCallTracker,
         call_ctx: ToolContext,
         addr: MessageAddress,
-        state: _AddressState,
+        state: AddressState,
         pending_media: list[str] | None = None,
     ) -> None:
         if pending_media is None:
@@ -867,7 +657,7 @@ class AgentLoop:
         llm_messages = self._build_prompt_and_messages(session, addr, pending_media)
         if await self._maybe_compact_proactive(session, addr, llm_messages):
             llm_messages = self._build_prompt_and_messages(session, addr, pending_media)
-        self._dump_messages(llm_messages)
+        dump_messages(self.debug_dump_path, llm_messages)
         if pending_media:
             pending_media.clear()
         response = await self._call_provider(addr, llm_messages)
@@ -895,7 +685,7 @@ class AgentLoop:
             read_roots=read_roots,
             write_roots=write_roots,
         )
-        state = _AddressState()
+        state = AddressState()
 
         while True:
             if not tracker.pending and not state.expecting_followup_turn:

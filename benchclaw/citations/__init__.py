@@ -13,11 +13,19 @@ from benchclaw.citations.parsing import (
     strip_citations,
 )
 from benchclaw.citations.render import RenderFormat, render_list
+from benchclaw.citations.validation import (
+    kb_records_from_events,
+    unverified_postscript,
+    validate_citations,
+)
 
 __all__ = [
     "Citation",
     "RenderFormat",
     "extract_kb_records",
+    "kb_records_from_events",
     "render_list",
     "strip_citations",
+    "unverified_postscript",
+    "validate_citations",
 ]

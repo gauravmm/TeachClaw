@@ -7,7 +7,8 @@ import pytest
 
 from benchclaw import personalities
 from benchclaw import storage as storage_layout
-from benchclaw.agent.loop import AgentLoop, ToolCallTracker, _AddressState
+from benchclaw.agent.loop import AgentLoop
+from benchclaw.agent.loop_state import AddressState, ToolCallTracker
 from benchclaw.bus import (
     MessageAddress,
     MessageBus,
@@ -51,7 +52,7 @@ def test_reset_event_clears_session_and_personality(tmp_path: Path) -> None:
     storage_layout.ensure_user_dirs(tmp_path, addr)
     personalities.write_personality(tmp_path, addr, "skeptical_cfo")
 
-    state = _AddressState()
+    state = AddressState()
     state.tool_call_trace = [ToolCallTrace(id="x", name="x", arguments={}, result="y")]
     loop._apply_control_event(SessionControlEvent(action="reset"), session, state, addr)
 
@@ -70,7 +71,7 @@ def test_forget_event_removes_storage(tmp_path: Path) -> None:
     (storage_root / "scratch.txt").write_text("hi")
     assert storage_root.exists()
 
-    state = _AddressState()
+    state = AddressState()
     loop._apply_control_event(SessionControlEvent(action="forget"), session, state, addr)
 
     assert session.events == []
@@ -83,7 +84,7 @@ async def test_apply_batch_handles_control_event(tmp_path: Path) -> None:
     addr = MessageAddress("telegram", "abc")
     session = Session(addr)
     session.append(UserEvent(content="prior"))
-    state = _AddressState()
+    state = AddressState()
     tracker = ToolCallTracker()
 
     await loop.bus.publish_inbound(addr, SessionControlEvent(action="reset"))
@@ -117,7 +118,7 @@ def test_personality_overlay_injected_into_synthetic_tail(tmp_path: Path) -> Non
 
 def test_outbound_message_carries_tool_trace(tmp_path: Path) -> None:
     _ = _make_loop(tmp_path)
-    state = _AddressState()
+    state = AddressState()
     state.tool_call_trace = [
         ToolCallTrace(id="tc1", name="search", arguments={"q": "x"}, result="ok")
     ]

@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, NotRequired, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 from benchclaw.utils import now_aware
 
@@ -108,7 +108,7 @@ class SessionControlEvent:
     channel publishes this for /clear and /forgetme respectively.
     """
 
-    action: str  # "reset" | "forget"
+    action: Literal["reset", "forget"]
 
 
 @dataclass(frozen=True)

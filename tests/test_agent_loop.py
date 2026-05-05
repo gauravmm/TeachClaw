@@ -5,12 +5,8 @@ from typing import Any
 
 import pytest
 
-from benchclaw.agent.loop import (
-    _CITATION_MAX_RETRIES,
-    AgentLoop,
-    ToolCallTracker,
-    _AddressState,
-)
+from benchclaw.agent.loop import _CITATION_MAX_RETRIES, AgentLoop
+from benchclaw.agent.loop_state import AddressState, ToolCallTracker
 from benchclaw.agent.tools.base import ToolContext
 from benchclaw.bus import (
     InboundMessage,
@@ -104,7 +100,7 @@ async def test_process_llm_turn_sends_visible_response(tmp_path: Path) -> None:
             tracker=tracker,
             call_ctx=call_ctx,
             addr=addr,
-            state=_AddressState(),
+            state=AddressState(),
         )
         outbound = await loop.bus.consume_outbound(channel="telegram")
 
@@ -147,7 +143,7 @@ async def test_process_llm_turn_records_tool_calls_as_events(tmp_path: Path) -> 
             tracker=tracker,
             call_ctx=call_ctx,
             addr=addr,
-            state=_AddressState(),
+            state=AddressState(),
         )
         outbound = await loop.bus.consume_outbound(channel="telegram")
 
@@ -307,7 +303,7 @@ async def test_proactive_compaction_summarizes_when_estimate_exceeds_threshold(
             tracker=tracker,
             call_ctx=call_ctx,
             addr=addr,
-            state=_AddressState(),
+            state=AddressState(),
         )
 
     assert len(provider.calls) == 2, "expected one summarize call + one main call"
@@ -364,7 +360,7 @@ async def test_no_compaction_when_under_threshold(tmp_path: Path) -> None:
             tracker=tracker,
             call_ctx=call_ctx,
             addr=addr,
-            state=_AddressState(),
+            state=AddressState(),
         )
 
     assert len(provider.calls) == 1, "no summarization expected when under threshold"
@@ -403,68 +399,6 @@ def test_render_options_elide_replaces_old_retrieval_results() -> None:
     assert tool_messages[1]["content"] == "big chunk body 2"
 
 
-def _kb_events(*ids: str) -> list[ToolEvent]:
-    return [
-        ToolEvent(
-            tool_call_id="tc-0",
-            tool_name="kb__search",
-            content="\n".join(f'{{"id": "{cid}"}}' for cid in ids),
-        )
-    ]
-
-
-def test_validate_citations_passes_when_all_ids_valid() -> None:
-    events = _kb_events("a", "b")
-    content = 'See <citation id="a">claim one</citation> and <citation id="b">claim two</citation>.'
-    bad_ids, bad_refs = AgentLoop._validate_citations(content, events)
-    assert bad_ids == []
-    assert bad_refs == []
-
-
-def test_validate_citations_flags_unknown_ids_with_indexed_refs() -> None:
-    events = _kb_events("a", "b")
-    # First citation valid, second invalid → bad_ref points at [2].
-    content = 'See <citation id="a">good</citation> and <citation id="ghost">made up</citation>.'
-    bad_ids, bad_refs = AgentLoop._validate_citations(content, events)
-    assert bad_ids == ["ghost"]
-    assert bad_refs == [2]
-
-
-def test_validate_citations_with_no_kb_calls_marks_everything_bad() -> None:
-    content = 'Citing <citation id="x">x</citation>.'
-    bad_ids, bad_refs = AgentLoop._validate_citations(content, [])
-    assert bad_ids == ["x"]
-    assert bad_refs == [1]
-
-
-def test_validate_citations_accepts_ids_from_earlier_turn() -> None:
-    # A kb__search ran in turn 1; turn 2 has a new user message and the
-    # current-turn trace would be empty. Validation must walk the full
-    # session, not just the current turn, so the prior id stays valid.
-    events: list = [
-        UserEvent(content="turn 1"),
-        ToolEvent(
-            tool_call_id="tc1",
-            tool_name="kb__search",
-            content='{"id": "page-028"}',
-        ),
-        AssistantEvent(content="answered turn 1"),
-        UserEvent(content="turn 2 follow-up"),
-    ]
-    content = '<citation id="page-028">prior fact</citation>.'
-    bad_ids, _ = AgentLoop._validate_citations(content, events)
-    assert bad_ids == []
-
-
-def test_append_unverified_postscript_singular_and_plural() -> None:
-    one = AgentLoop._append_unverified_postscript("Hello.", [3])
-    assert one.endswith("_Citation [3] is not automatically verifiable. Check claims carefully._")
-    many = AgentLoop._append_unverified_postscript("Hello.", [2, 5])
-    assert many.endswith(
-        "_Citations [2], [5] are not automatically verifiable. Check claims carefully._"
-    )
-
-
 @pytest.mark.asyncio
 async def test_apply_batch_skips_llm_after_terminal_tool(tmp_path: Path) -> None:
     """When the prior assistant turn used only terminal_when_lone tools
@@ -490,7 +424,7 @@ async def test_apply_batch_skips_llm_after_terminal_tool(tmp_path: Path) -> None
         )
     )
     tracker = ToolCallTracker()
-    state = _AddressState()
+    state = AddressState()
     tracker._in_flight["tc1"] = "send_media"
     batch_obj = InboundMessageBatch(
         tool_results=[
@@ -521,7 +455,7 @@ async def test_invalid_citation_pushback_keeps_typing_indicator_on(tmp_path: Pat
     session = Session(addr)
     session.append(UserEvent(content="hi"))
     tracker = ToolCallTracker()
-    state = _AddressState()
+    state = AddressState()
 
     async with loop.tools:
         call_ctx = ToolContext(
@@ -554,7 +488,7 @@ async def test_invalid_citation_triggers_retry_then_postscript(tmp_path: Path) -
         )
     )
     tracker = ToolCallTracker()
-    state = _AddressState()
+    state = AddressState()
 
     async with loop.tools:
         call_ctx = ToolContext(
