@@ -41,12 +41,6 @@ class AddressState:
     citation_retries: int = 0
 
 
-@dataclass(frozen=True)
-class BatchApplication:
-    needs_llm: bool = False
-    start_typing: bool = False
-
-
 class ToolCallTracker:
     """Per-address tracker for in-flight background tool calls."""
 

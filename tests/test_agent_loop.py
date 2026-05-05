@@ -438,9 +438,9 @@ async def test_apply_batch_skips_llm_after_terminal_tool(tmp_path: Path) -> None
     )
 
     async with loop.tools:
-        result = loop._apply_batch(batch_obj, session, tracker, addr, state)
+        needs_llm = await loop._apply_batch(batch_obj, session, tracker, addr, state)
 
-    assert result.needs_llm is False
+    assert needs_llm is False
     assert isinstance(session.events[-1], ToolEvent)
     assert session.events[-1].tool_name == "send_media"
 

@@ -14,12 +14,7 @@ from benchclaw import storage as storage_layout
 from benchclaw.agent.cache_monitor import PromptCacheMonitor
 from benchclaw.agent.compactor import Compactor
 from benchclaw.agent.dump import dump_messages
-from benchclaw.agent.loop_state import (
-    AddressState,
-    BatchApplication,
-    ToolCallTracker,
-    TurnOutcome,
-)
+from benchclaw.agent.loop_state import AddressState, ToolCallTracker, TurnOutcome
 from benchclaw.agent.prompt import PromptBuild, PromptBuilder
 from benchclaw.agent.response import (
     CITATION_REMINDER,
@@ -174,16 +169,17 @@ class AgentLoop:
             except OSError as e:
                 logger.error(f"Failed to remove storage for {addr}: {e}")
 
-    def _apply_batch(
+    async def _apply_batch(
         self,
         batch: InboundMessageBatch,
         session: Session,
         tracker: ToolCallTracker,
         addr: MessageAddress,
         state: AddressState,
-    ) -> BatchApplication:
+    ) -> bool:
+        """Apply one inbound batch to the session and return whether the
+        address loop should run an LLM turn after this batch."""
         needs_llm = False
-        start_typing = False
 
         nudge_citations = False
         for result in batch.tool_results:
@@ -221,7 +217,7 @@ class AgentLoop:
             self._apply_control_event(control, session, state, addr)
 
         if batch.user_messages:
-            start_typing = True
+            await self.bus.publish_outbound(TypingEvent(addr, is_typing=True))
             if tracker.pending:
                 tracker.handle_interrupt(session)
             self._flush_pending_system_events(session, state)
@@ -238,7 +234,7 @@ class AgentLoop:
             state.pending_media = list(user_event.media)
             needs_llm = True
 
-        return BatchApplication(needs_llm=needs_llm, start_typing=start_typing)
+        return needs_llm
 
     async def _process_llm_turn(
         self,
@@ -258,26 +254,32 @@ class AgentLoop:
             return TurnOutcome.DONE
         return await self.response.apply(response, session, tracker, call_ctx, addr, state)
 
-    async def _address_loop(self, addr: MessageAddress) -> None:
-        session = self.sessions.get(addr)
-        tracker = ToolCallTracker()
+    def _build_call_ctx(self, addr: MessageAddress, tracker: ToolCallTracker) -> ToolContext:
+        """Build the per-address ToolContext used by every tool execution.
+
+        Pulls the conversation sandbox layout from :mod:`benchclaw.storage`
+        and wires in the live in-flight task map so cancellation tools can
+        reach background work.
+        """
         storage_layout.ensure_user_dirs(self.workspace_path, addr)
-        storage_root = storage_layout.storage_root(self.workspace_path, addr).resolve()
-        read_roots: tuple[Path, ...] = (
-            storage_layout.skills_dir(self.workspace_path).resolve(),
-            storage_layout.common_dir(self.workspace_path).resolve(),
-        )
-        write_roots: tuple[Path, ...] = ()
-        call_ctx = ToolContext(
+        return ToolContext(
             workspace=self.workspace_path,
             bus=self.bus,
             media_repo=self.media_repo,
             address=addr,
             background_tasks=tracker.tasks,
-            storage_root=storage_root,
-            read_roots=read_roots,
-            write_roots=write_roots,
+            storage_root=storage_layout.storage_root(self.workspace_path, addr).resolve(),
+            read_roots=(
+                storage_layout.skills_dir(self.workspace_path).resolve(),
+                storage_layout.common_dir(self.workspace_path).resolve(),
+            ),
+            write_roots=(),
         )
+
+    async def _address_loop(self, addr: MessageAddress) -> None:
+        session = self.sessions.get(addr)
+        tracker = ToolCallTracker()
+        call_ctx = self._build_call_ctx(addr, tracker)
         state = AddressState()
         # When the previous turn queued a follow-up (e.g. citation pushback),
         # keep the typing bubble on through the next consume so it doesn't
@@ -290,10 +292,8 @@ class AgentLoop:
 
             batch = await self.bus.consume_inbound_batch(address=addr)
             last_outcome = TurnOutcome.DONE
-            batch_result = self._apply_batch(batch, session, tracker, addr, state)
-            if batch_result.start_typing:
-                await self.bus.publish_outbound(TypingEvent(addr, is_typing=True))
-            if not batch_result.needs_llm:
+            needs_llm = await self._apply_batch(batch, session, tracker, addr, state)
+            if not needs_llm:
                 continue
 
             if state.iteration_count >= self.config.max_tool_iterations:

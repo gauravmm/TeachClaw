@@ -90,7 +90,7 @@ async def test_apply_batch_handles_control_event(tmp_path: Path) -> None:
 
     await loop.bus.publish_inbound(addr, SessionControlEvent(action="reset"))
     batch = await loop.bus.consume_inbound_batch(address=addr)
-    loop._apply_batch(batch, session, tracker, addr, state)
+    await loop._apply_batch(batch, session, tracker, addr, state)
 
     assert session.events == []
 
