@@ -93,6 +93,10 @@ def _normalize_emoji(emoji: str) -> str:
     return emoji.replace(_VARIATION_SELECTOR_16, "")
 
 
+_SOURCES_NORM = _normalize_emoji(SOURCES_REACTION)
+_TRACE_NORM = _normalize_emoji(TRACE_REACTION)
+
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -847,36 +851,12 @@ class TelegramChannel(BaseChannel):
             if not st.rate_blocked_warned and self._app:
                 st.rate_blocked_warned = True
                 asyncio.create_task(
-                    self._safe_send_text(chat_id, "take a breath — too many messages just now.")
+                    self._post(chat_id, "take a breath — too many messages just now.")
                 )
             return False
         st.rate_window.append(now)
         st.rate_blocked_warned = False
         return True
-
-    async def _safe_send_text(
-        self,
-        chat_id: int,
-        text: str,
-        *,
-        reply_to_message_id: int | None = None,
-        parse_mode: str | None = None,
-    ) -> None:
-        if not self._app:
-            return
-        try:
-            kwargs: dict[str, Any] = {"chat_id": chat_id, "text": text}
-            if reply_to_message_id is not None:
-                kwargs["reply_to_message_id"] = reply_to_message_id
-                # Don't fail if the original was deleted in the meantime.
-                kwargs["allow_sending_without_reply"] = True
-            if parse_mode is not None:
-                kwargs["parse_mode"] = parse_mode
-                # Don't let preview cards bury the citation list.
-                kwargs["disable_web_page_preview"] = True
-            await self._app.bot.send_message(**kwargs)
-        except Exception:
-            logger.debug("Failed to send text")
 
     # ---- outbound ---------------------------------------------------------
     #
@@ -976,33 +956,48 @@ class TelegramChannel(BaseChannel):
             st.replies[mid] = record
         if has_citations and not st.seen_first_citation:
             st.seen_first_citation = True
-            await self._safe_send_text(
-                chat_id, f"(react {SOURCES_REACTION} to any reply for sources)"
-            )
+            await self._post(chat_id, f"(react {SOURCES_REACTION} to any reply for sources)")
 
     async def _post(
         self,
         chat_id: int,
         body: str,
         *,
-        markdown: bool,
+        markdown: bool = False,
+        parse_mode: str | None = None,
+        reply_to_message_id: int | None = None,
     ) -> int | None:
-        """Send one Telegram message. With markdown=True the body is converted
-        to Telegram HTML and parse_mode='HTML' is set; on parse error we fall
-        back to the raw body with no markup. Returns the new message_id."""
+        """Send one Telegram text message; return the new message_id, or None
+        on failure. Noops when the bot isn't running, so callers don't have
+        to gate on ``self._app``.
+
+        ``markdown=True``: convert ``body`` from markdown to Telegram HTML and
+        set ``parse_mode='HTML'``; on HTML parse error, retry with the raw
+        body and no markup. ``markdown=False``: send ``body`` verbatim. Set
+        ``parse_mode`` explicitly when sending pre-rendered HTML (e.g. the
+        citation listing).
+        """
         if not self._app:
             return None
+        kwargs: dict[str, Any] = {"chat_id": chat_id, "text": body}
+        if markdown:
+            kwargs["text"] = _markdown_to_telegram_html(body)
+            kwargs["parse_mode"] = "HTML"
+        elif parse_mode is not None:
+            kwargs["parse_mode"] = parse_mode
+        if kwargs.get("parse_mode") == "HTML":
+            # Don't let link previews bury the message body.
+            kwargs["disable_web_page_preview"] = True
+        if reply_to_message_id is not None:
+            kwargs["reply_to_message_id"] = reply_to_message_id
+            # Don't fail if the original was deleted in the meantime.
+            kwargs["allow_sending_without_reply"] = True
         try:
-            if markdown:
-                sent = await self._app.bot.send_message(
-                    chat_id=chat_id, text=_markdown_to_telegram_html(body), parse_mode="HTML"
-                )
-            else:
-                sent = await self._app.bot.send_message(chat_id=chat_id, text=body)
+            sent = await self._app.bot.send_message(**kwargs)
             return sent.message_id
         except Exception as e:
             if not markdown:
-                logger.error(f"Error sending Telegram message: {e}")
+                logger.warning(f"Failed to send Telegram message: {e}")
                 return None
             logger.warning(f"HTML parse failed, falling back to plain text: {e}")
             try:
@@ -1110,24 +1105,22 @@ class TelegramChannel(BaseChannel):
         self, emoji: str, message_id: int, st: _UserState, chat_id: int
     ) -> None:
         normalized = _normalize_emoji(emoji)
-        if normalized == _normalize_emoji(SOURCES_REACTION):
+        if normalized == _SOURCES_NORM:
             await self._reaction_sources(message_id, st, chat_id)
-        elif normalized == _normalize_emoji(TRACE_REACTION):
+        elif normalized == _TRACE_NORM:
             await self._reaction_trace(message_id, st, chat_id)
         # 👍/👎/❓/🔁 reserved for future, no-op for now.
 
     async def _reaction_sources(self, message_id: int, st: _UserState, chat_id: int) -> None:
-        if not self._app:
-            return
         # All replies are threaded onto the original bot message the user
         # reacted on, so the response is anchored even after intervening
-        # chatter. allow_sending_without_reply on the helper handles the case
+        # chatter. allow_sending_without_reply on _post handles the case
         # where the original message has been deleted.
         record = st.replies.get(message_id)
         if record is None:
             # We don't track replies past process restart, /clear, or
             # /forgetme. Don't pretend we know more than that.
-            await self._safe_send_text(
+            await self._post(
                 chat_id,
                 "I don't have a record of that message. It may be from a previous "
                 "session or a message I didn't send.",
@@ -1136,7 +1129,7 @@ class TelegramChannel(BaseChannel):
             return
         _, citations = cit.strip_citations(record.content)
         if not citations:
-            await self._safe_send_text(
+            await self._post(
                 chat_id,
                 "That reply didn't cite any sources.",
                 reply_to_message_id=message_id,
@@ -1144,27 +1137,28 @@ class TelegramChannel(BaseChannel):
             return
         kb_records = cit.extract_kb_records(record.tool_calls)
         rendered = cit.render_list(citations[:5], kb_records, fmt=cit.RenderFormat.TELEGRAM_HTML)
-        await self._safe_send_text(
+        await self._post(
             chat_id,
             rendered,
-            reply_to_message_id=message_id,
             parse_mode="HTML",
+            reply_to_message_id=message_id,
         )
-        try:
-            from telegram import ReactionTypeEmoji
+        if self._app:
+            try:
+                from telegram import ReactionTypeEmoji
 
-            await self._app.bot.set_message_reaction(
-                chat_id=chat_id,
-                message_id=message_id,
-                reaction=[ReactionTypeEmoji(SOURCES_REACTION)],
-            )
-        except Exception as e:
-            logger.debug(f"setMessageReaction failed: {e}")
+                await self._app.bot.set_message_reaction(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    reaction=[ReactionTypeEmoji(SOURCES_REACTION)],
+                )
+            except Exception as e:
+                logger.debug(f"setMessageReaction failed: {e}")
 
     async def _reaction_trace(self, message_id: int, st: _UserState, chat_id: int) -> None:
         record = st.replies.get(message_id)
         if record is None:
-            await self._safe_send_text(
+            await self._post(
                 chat_id,
                 "I don't have a record of that message. It may be from a previous "
                 "session or a message I didn't send.",
@@ -1172,7 +1166,7 @@ class TelegramChannel(BaseChannel):
             )
             return
         if not record.tool_calls:
-            await self._safe_send_text(
+            await self._post(
                 chat_id, "No tool calls for that reply.", reply_to_message_id=message_id
             )
             return
@@ -1189,7 +1183,7 @@ class TelegramChannel(BaseChannel):
                 flat = tc.result.replace("\n", " ").strip()
                 result_text = flat[:120] + "…" if len(flat) > 120 else flat
             lines.append(f"• {tc.name}({args_text}) → {result_text}")
-        await self._safe_send_text(chat_id, "\n".join(lines), reply_to_message_id=message_id)
+        await self._post(chat_id, "\n".join(lines), reply_to_message_id=message_id)
 
     # ---- misc -------------------------------------------------------------
 
