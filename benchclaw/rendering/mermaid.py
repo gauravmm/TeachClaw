@@ -6,6 +6,10 @@ Public surface:
   fenced ``mermaid`` code block in ``text``, in order.
 - ``render(source, theme="default")`` returns ``RenderedDiagram`` — either a
   PNG path or an error reason. Caches by ``sha256(source + theme)``.
+- ``render_blocks(blocks, ...)`` renders up to a fixed cap of blocks, marking
+  the rest as ``status='fail'`` so callers don't have to know the cap.
+- ``format_failure(source)`` returns the markdown the caller should post for
+  any ``RenderedDiagram`` whose status is ``'fail'``.
 
 The renderer shells out to ``mmdc`` (`@mermaid-js/mermaid-cli`); install it
 via ``npm install -g @mermaid-js/mermaid-cli``. If ``mmdc`` is missing or
@@ -53,11 +57,9 @@ class RenderedDiagram:
 
 
 def extract_blocks(text: str) -> list[MermaidBlock]:
-    """Find fenced ``mermaid`` code blocks; return at most ``_MAX_DIAGRAMS`` matches.
+    """Find fenced ``mermaid`` code blocks; returns every match in order.
 
-    Excess matches are returned with ``status='fail'`` from ``render`` so the
-    caller can post them as raw source. The cap on extraction here returns
-    every match — let the caller decide what to do with extras.
+    Use ``render_blocks`` if you want the per-message render cap applied.
     """
     out: list[MermaidBlock] = []
     for m in _FENCE_RE.finditer(text):
@@ -192,6 +194,39 @@ async def render(
         )
     logger.info(f"mermaid {key}: rendered ok ({out_path.stat().st_size} bytes)")
     return RenderedDiagram(status="ok", png_path=out_path, source=source)
+
+
+async def render_blocks(
+    blocks: list[MermaidBlock],
+    workspace: Path,
+    *,
+    theme: str = "default",
+    timeout: float = _DEFAULT_TIMEOUT,
+    mmdc_path: str | None = None,
+) -> list[RenderedDiagram]:
+    """Render a list of blocks, capping rendered attempts at ``_MAX_DIAGRAMS``.
+
+    Blocks past the cap come back as ``status='fail'`` carrying the original
+    source, so callers see a uniform list and don't need to know the cap.
+    """
+    out: list[RenderedDiagram] = []
+    for i, blk in enumerate(blocks):
+        if i < _MAX_DIAGRAMS:
+            out.append(
+                await render(
+                    blk.source, workspace, theme=theme, timeout=timeout, mmdc_path=mmdc_path
+                )
+            )
+        else:
+            out.append(
+                RenderedDiagram(status="fail", error="diagram cap exceeded", source=blk.source)
+            )
+    return out
+
+
+def format_failure(source: str) -> str:
+    """Markdown the caller should post in lieu of a rendered diagram."""
+    return "\n_couldn't render this diagram, source below_\n```\n" + source + "\n```\n"
 
 
 def is_available(mmdc_path: str | None = None) -> bool:

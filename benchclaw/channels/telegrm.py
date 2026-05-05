@@ -24,6 +24,7 @@ import asyncio
 import re
 import time
 from collections import deque
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -129,17 +130,46 @@ class TelegramConfig(ChannelConfig):
 
 @dataclass
 class _ReplyRecord:
-    """Raw bits of an outbound assistant turn, kept under the Telegram
-    message_id of the first segment we sent. Citations and kb_records are
-    re-derived on demand in the reaction handlers (see _reaction_sources).
+    """Raw bits of an outbound assistant turn, indexed under every Telegram
+    message_id we sent for it. Citations and kb_records are re-derived on
+    demand in the reaction handlers (see _reaction_sources).
 
     This intentionally stores the *unstripped* content — i.e. what the LLM
     emitted, including any ``<citation>`` markers — so the SOURCES_REACTION
-    can re-parse it without any TTL/tombstone state to manage.
+    can re-parse it without any TTL/tombstone state to manage. Multiple
+    message_ids point at the same record when a reply spans several
+    segments (text + diagrams, or media + caption-as-reply), so a reaction
+    on any one segment finds the same sources.
     """
 
     content: str
     tool_calls: list[ToolCallTrace]
+
+
+# ---- Outbound segments -----------------------------------------------------
+# A reply is planned as an ordered list of OutboundSegments and dispatched by
+# one loop. Adding a new content type (audio, system banner, …) means adding
+# a dataclass + one branch in _dispatch — no changes to send() / _record_reply.
+
+
+@dataclass
+class TextSegment:
+    body: str  # markdown; converted to Telegram HTML at send time
+
+
+@dataclass
+class DiagramSegment:
+    rendered: mermaid_renderer.RenderedDiagram
+
+
+@dataclass
+class MediaSegment:
+    path: Path
+    mime: str
+    caption: str | None  # markdown; converted at send time
+
+
+OutboundSegment = TextSegment | DiagramSegment | MediaSegment
 
 
 @dataclass
@@ -848,7 +878,12 @@ class TelegramChannel(BaseChannel):
         except Exception:
             logger.debug("Failed to send text")
 
-    # ---- outbound -- mermaid + citation aware -----------------------------
+    # ---- outbound ---------------------------------------------------------
+    #
+    # send() is a thin orchestrator. The three concerns split across helpers:
+    #   _plan_segments  — content shape (mermaid/media/text) → typed segments
+    #   _dispatch       — segments → Telegram bot API calls (yields sent ids)
+    #   _record_reply   — sent ids → cite map + discoverability hint
 
     async def send(self, msg: OutboundMessage) -> None:
         if not self._app:
@@ -860,85 +895,115 @@ class TelegramChannel(BaseChannel):
             logger.error(f"Invalid chat_id: {msg.address.chat_id}")
             return
 
-        st = self._user_state(chat_id)
-        # Strip <citation> markup for display, but keep the raw content so
-        # the SOURCES_REACTION can re-derive citations on demand from
-        # st.replies[message_id]. Same story for tool_calls.
         text, citations = cit.strip_citations(msg.content)
         raw_tool_calls = msg.metadata.get("tool_calls") if msg.metadata else None
         record = _ReplyRecord(content=msg.content, tool_calls=list(raw_tool_calls or []))
 
+        segments = await self._plan_segments(msg, text)
+        sent_ids = [mid async for mid in self._dispatch(chat_id, segments)]
+        if sent_ids:
+            await self._record_reply(chat_id, sent_ids, record, has_citations=bool(citations))
+
+    async def _plan_segments(self, msg: OutboundMessage, text: str) -> list[OutboundSegment]:
         if msg.media:
             # Outbound media (e.g. send_media tool) bypasses mermaid routing.
-            sent_id = await self._send_media_message(msg, text, chat_id)
-        else:
-            sent_id = await self._send_text_with_mermaid(chat_id, text)
+            media_path, mime = self._resolve_outbound_media(msg)
+            return [MediaSegment(path=media_path, mime=mime, caption=text or None)]
 
-        if sent_id is not None:
-            st.replies[sent_id] = record
-            if citations and not st.seen_first_citation:
-                st.seen_first_citation = True
-                await self._safe_send_text(
-                    chat_id, f"(react {SOURCES_REACTION} to any reply for sources)"
-                )
-
-    async def _send_text_with_mermaid(self, chat_id: int, text: str) -> int | None:
         blocks = mermaid_renderer.extract_blocks(text)
-        # Build a list of segments: ('text', str) or ('mmd', RenderedDiagram)
-        segments: list[tuple[str, Any]] = []
         if not blocks:
-            segments.append(("text", text))
-        else:
-            cursor = 0
-            kept = blocks[:2]
-            for blk in kept:
-                start, end = blk.span
-                if start > cursor:
-                    segments.append(("text", text[cursor:start]))
-                rendered = await mermaid_renderer.render(
-                    blk.source, self.workspace, mmdc_path=self.mermaid_mmdc_path
-                )
-                segments.append(("mmd", rendered))
-                cursor = end
-            if cursor < len(text):
-                segments.append(("text", text[cursor:]))
-            for extra in blocks[2:]:
-                segments.append(
-                    (
-                        "text",
-                        "\n_couldn't render this diagram, source below_\n```\n"
-                        + extra.source
-                        + "\n```\n",
-                    )
-                )
+            return [TextSegment(body=text)] if text.strip() else []
 
-        first_msg_id: int | None = None
-        for kind, payload in segments:
-            if kind == "text":
-                body = str(payload).strip()
-                if not body:
-                    continue
-                pieces = _split_long(body, self.config.soft_split_chars)
-                for piece in pieces:
-                    sent = await self._send_html(chat_id, piece)
-                    if sent and first_msg_id is None:
-                        first_msg_id = sent
-            else:
-                rendered: mermaid_renderer.RenderedDiagram = payload
-                sent = await self._send_diagram(chat_id, rendered)
-                if sent and first_msg_id is None:
-                    first_msg_id = sent
+        rendered = await mermaid_renderer.render_blocks(
+            blocks, self.workspace, mmdc_path=self.mermaid_mmdc_path
+        )
+        segments: list[OutboundSegment] = []
+        cursor = 0
+        for blk, rd in zip(blocks, rendered, strict=True):
+            start, end = blk.span
+            if start > cursor and text[cursor:start].strip():
+                segments.append(TextSegment(body=text[cursor:start]))
+            segments.append(DiagramSegment(rendered=rd))
+            cursor = end
+        if cursor < len(text) and text[cursor:].strip():
+            segments.append(TextSegment(body=text[cursor:]))
+        return segments
 
-        return first_msg_id
+    def _resolve_outbound_media(self, msg: OutboundMessage) -> tuple[Path, str]:
+        """Return (absolute_path, mime). Raises FileNotFoundError if missing.
+        Uses media_repo when configured; otherwise probes via filetype."""
+        ref = msg.media[0]
+        if self.media_repo and not Path(ref).is_absolute():
+            return self.media_repo.resolve_file(msg.address, ref)
+        media_path = Path(ref)
+        if not media_path.is_absolute():
+            media_path = Path.cwd() / media_path
+        if not media_path.is_file():
+            raise FileNotFoundError(f"Telegram media not found: {ref}")
+        import filetype
 
-    async def _send_html(self, chat_id: int, body: str) -> int | None:
+        return media_path, filetype.guess_mime(str(media_path)) or ""
+
+    async def _dispatch(self, chat_id: int, segments: list[OutboundSegment]) -> AsyncIterator[int]:
+        for seg in segments:
+            match seg:
+                case TextSegment(body=body):
+                    for piece in _split_long(body.strip(), self.config.soft_split_chars):
+                        if not piece:
+                            continue
+                        sent = await self._post(chat_id, piece, markdown=True)
+                        if sent is not None:
+                            yield sent
+                case DiagramSegment(rendered=rd):
+                    sent = await self._post_diagram(chat_id, rd)
+                    if sent is not None:
+                        yield sent
+                case MediaSegment(path=path, mime=mime, caption=caption):
+                    sent = await self._post_media(chat_id, path, mime, caption)
+                    if sent is not None:
+                        yield sent
+
+    async def _record_reply(
+        self,
+        chat_id: int,
+        sent_ids: list[int],
+        record: _ReplyRecord,
+        *,
+        has_citations: bool,
+    ) -> None:
+        st = self._user_state(chat_id)
+        for mid in sent_ids:
+            st.replies[mid] = record
+        if has_citations and not st.seen_first_citation:
+            st.seen_first_citation = True
+            await self._safe_send_text(
+                chat_id, f"(react {SOURCES_REACTION} to any reply for sources)"
+            )
+
+    async def _post(
+        self,
+        chat_id: int,
+        body: str,
+        *,
+        markdown: bool,
+    ) -> int | None:
+        """Send one Telegram message. With markdown=True the body is converted
+        to Telegram HTML and parse_mode='HTML' is set; on parse error we fall
+        back to the raw body with no markup. Returns the new message_id."""
         if not self._app:
             return None
-        html = _markdown_to_telegram_html(body)
         try:
-            sent = await self._app.bot.send_message(chat_id=chat_id, text=html, parse_mode="HTML")
+            if markdown:
+                sent = await self._app.bot.send_message(
+                    chat_id=chat_id, text=_markdown_to_telegram_html(body), parse_mode="HTML"
+                )
+            else:
+                sent = await self._app.bot.send_message(chat_id=chat_id, text=body)
             return sent.message_id
         except Exception as e:
+            if not markdown:
+                logger.error(f"Error sending Telegram message: {e}")
+                return None
             logger.warning(f"HTML parse failed, falling back to plain text: {e}")
             try:
                 sent = await self._app.bot.send_message(chat_id=chat_id, text=body)
@@ -947,7 +1012,7 @@ class TelegramChannel(BaseChannel):
                 logger.error(f"Error sending Telegram message: {e2}")
                 return None
 
-    async def _send_diagram(
+    async def _post_diagram(
         self, chat_id: int, rendered: mermaid_renderer.RenderedDiagram
     ) -> int | None:
         if not self._app:
@@ -959,36 +1024,23 @@ class TelegramChannel(BaseChannel):
                 return sent.message_id
             except Exception as e:
                 logger.warning(f"Failed to send mermaid PNG, falling back to source: {e}")
-        body = "_couldn't render this diagram, source below_\n```\n" + rendered.source + "\n```"
-        return await self._send_html(chat_id, body)
+        return await self._post(
+            chat_id, mermaid_renderer.format_failure(rendered.source), markdown=True
+        )
 
-    async def _send_media_message(
-        self,
-        msg: OutboundMessage,
-        text: str,
-        chat_id: int,
+    async def _post_media(
+        self, chat_id: int, path: Path, mime: str, caption: str | None
     ) -> int | None:
         assert self._app
+        kind = mime.split("/", 1)[0] if mime else ""
+        html_caption = _markdown_to_telegram_html(caption) if caption else None
+        send_kwargs = {
+            "chat_id": chat_id,
+            "caption": html_caption,
+            "parse_mode": "HTML" if html_caption else None,
+        }
         try:
-            if self.media_repo and not Path(msg.media[0]).is_absolute():
-                media_path, mime = self.media_repo.resolve_file(msg.address, msg.media[0])
-            else:
-                media_path = Path(msg.media[0])
-                if not media_path.is_absolute():
-                    media_path = Path.cwd() / media_path
-                if not media_path.is_file():
-                    raise FileNotFoundError(f"Telegram media not found: {msg.media[0]}")
-                import filetype
-
-                mime = filetype.guess_mime(str(media_path))
-            kind = (mime or "").split("/", 1)[0]
-            caption = _markdown_to_telegram_html(text) if text else None
-            send_kwargs = {
-                "chat_id": chat_id,
-                "caption": caption,
-                "parse_mode": "HTML" if caption else None,
-            }
-            with media_path.open("rb") as fh:
+            with path.open("rb") as fh:
                 if kind == "image":
                     sent = await self._app.bot.send_photo(photo=fh, **send_kwargs)
                 elif kind == "video":
