@@ -47,7 +47,7 @@ def run(args) -> None:
                     config=config,
                     bus=bus,
                     provider=provider,
-                    debug_dump_path=args.debug_dump,
+                    debug_dump_dir=args.debug_dump,
                     media_repo=media_repo,
                 )
 
@@ -86,8 +86,8 @@ def main() -> None:
         "--debug-dump",
         type=Path,
         default=None,
-        metavar="FILE",
-        help="dump LLM input messages to this file before each call (for debugging)",
+        metavar="DIR",
+        help="dump LLM input messages to this directory (one file per conversation) before each call (for debugging)",
     )
     args = parser.parse_args()
     run(args)

@@ -89,13 +89,13 @@ class AgentLoop:
         bus: MessageBus,
         provider: LLMProvider,
         media_repo: MediaRepository,
-        debug_dump_path: Path | None = None,
+        debug_dump_dir: Path | None = None,
     ):
         self.workspace_path = config.workspace_path
         self.config = config.agents.master
         self.bus = bus
         self.provider = provider
-        self.debug_dump_path = debug_dump_path
+        self.debug_dump_dir = debug_dump_dir
         self.media_repo = media_repo
 
         self.sessions = SessionManager(config.workspace_path / "sessions")
@@ -657,7 +657,7 @@ class AgentLoop:
         llm_messages = self._build_prompt_and_messages(session, addr, pending_media)
         if await self._maybe_compact_proactive(session, addr, llm_messages):
             llm_messages = self._build_prompt_and_messages(session, addr, pending_media)
-        dump_messages(self.debug_dump_path, llm_messages)
+        dump_messages(self.debug_dump_dir, addr, llm_messages)
         if pending_media:
             pending_media.clear()
         response = await self._call_provider(addr, llm_messages)

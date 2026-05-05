@@ -16,17 +16,27 @@ import json
 from pathlib import Path
 
 from loguru import logger
+from pathvalidate import sanitize_filename
+
+from benchclaw.bus import MessageAddress
 
 
-def dump_messages(path: Path | None, messages: list[dict[str, object]]) -> None:
-    """Write ``messages`` as pretty JSON to ``path``, inflating any
-    string-encoded JSON payloads first. No-op when ``path`` is None
-    so the fast path doesn't pay any inflation cost.
+def dump_messages(
+    dir_path: Path | None,
+    addr: MessageAddress,
+    messages: list[dict[str, object]],
+) -> None:
+    """Write ``messages`` as pretty JSON into ``dir_path`` under a
+    per-conversation filename derived from ``addr``. Inflates any
+    string-encoded JSON payloads first. No-op when ``dir_path`` is
+    None so the fast path doesn't pay any inflation cost.
     """
-    if path is None:
+    if dir_path is None:
         return
     try:
-        path.write_text(
+        dir_path.mkdir(parents=True, exist_ok=True)
+        filename = sanitize_filename(str(addr).replace(":", "_")) + ".json"
+        (dir_path / filename).write_text(
             json.dumps(
                 [_inflate(m) for m in messages],
                 ensure_ascii=False,
