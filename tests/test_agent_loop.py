@@ -5,8 +5,9 @@ from typing import Any
 
 import pytest
 
-from benchclaw.agent.loop import _CITATION_MAX_RETRIES, AgentLoop
+from benchclaw.agent.loop import AgentLoop
 from benchclaw.agent.loop_state import AddressState, ToolCallTracker, TurnOutcome
+from benchclaw.agent.response import CITATION_MAX_RETRIES
 from benchclaw.agent.tools.base import ToolContext
 from benchclaw.bus import (
     InboundMessage,
@@ -465,9 +466,7 @@ async def test_invalid_citation_pushback_keeps_typing_indicator_on(tmp_path: Pat
             address=addr,
             background_tasks=tracker.tasks,
         )
-        outcome = await loop._apply_llm_response(
-            bad_response, session, tracker, call_ctx, addr, state
-        )
+        outcome = await loop.response.apply(bad_response, session, tracker, call_ctx, addr, state)
 
     assert outcome is TurnOutcome.RETRY_QUEUED
 
@@ -501,15 +500,15 @@ async def test_invalid_citation_triggers_retry_then_postscript(tmp_path: Path) -
             background_tasks=tracker.tasks,
         )
         # First pass: bad citation → retry, no outbound, reminder injected.
-        await loop._apply_llm_response(bad_response, session, tracker, call_ctx, addr, state)
+        await loop.response.apply(bad_response, session, tracker, call_ctx, addr, state)
         assert state.citation_retries == 1
         assert loop.bus.outbound.get("telegram") is None or loop.bus.outbound["telegram"].empty()
         # Inbound queue should now hold the SystemMessageEvent reminder.
         assert addr in loop.bus.inbound and not loop.bus.inbound[addr].empty()
 
         # Second pass: still bad → publish anyway with postscript.
-        await loop._apply_llm_response(bad_response, session, tracker, call_ctx, addr, state)
-        assert state.citation_retries == _CITATION_MAX_RETRIES
+        await loop.response.apply(bad_response, session, tracker, call_ctx, addr, state)
+        assert state.citation_retries == CITATION_MAX_RETRIES
         outbound_q = loop.bus.outbound["telegram"]
         published = outbound_q.get_nowait()
         assert isinstance(published, OutboundMessage)

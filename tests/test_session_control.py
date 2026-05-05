@@ -9,6 +9,7 @@ from benchclaw import personalities
 from benchclaw import storage as storage_layout
 from benchclaw.agent.loop import AgentLoop
 from benchclaw.agent.loop_state import AddressState, ToolCallTracker
+from benchclaw.agent.response import stringify_tool_result
 from benchclaw.bus import (
     MessageAddress,
     MessageBus,
@@ -130,5 +131,5 @@ def test_stringify_tool_result_preserves_full_content() -> None:
     channel needs the raw text to extract structured payloads (like kb
     records for the citation listing)."""
     long_str = "x" * 500
-    assert AgentLoop._stringify_tool_result(long_str) == long_str
-    assert AgentLoop._stringify_tool_result({"a": 1}) == '{"a": 1}'
+    assert stringify_tool_result(long_str) == long_str
+    assert stringify_tool_result({"a": 1}) == '{"a": 1}'

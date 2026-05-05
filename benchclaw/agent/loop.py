@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import shutil
 from pathlib import Path
 
 from loguru import logger
 
-from benchclaw import citations as cit
 from benchclaw import personalities
 from benchclaw import storage as storage_layout
 from benchclaw.agent.cache_monitor import PromptCacheMonitor
@@ -22,6 +20,12 @@ from benchclaw.agent.loop_state import (
     TurnOutcome,
 )
 from benchclaw.agent.prompt import PromptBuild, PromptBuilder
+from benchclaw.agent.response import (
+    CITATION_REMINDER,
+    CITATION_TOOL_PREFIXES,
+    ResponseHandler,
+    stringify_tool_result,
+)
 from benchclaw.agent.tools.base import ToolContext
 from benchclaw.agent.tools.mcp_manager import MCPManager
 from benchclaw.agent.tools.registry import ToolRegistry
@@ -32,38 +36,12 @@ from benchclaw.bus import (
     MessageBus,
     OutboundMessage,
     SessionControlEvent,
-    SystemMessageEvent,
-    ToolCallTrace,
-    ToolResultEvent,
     TypingEvent,
 )
 from benchclaw.config import Config
 from benchclaw.media import MediaRepository
-from benchclaw.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from benchclaw.session import (
-    AssistantEvent,
-    Session,
-    SessionManager,
-    SystemEvent,
-    UserEvent,
-)
-
-# When any of these MCP tool prefixes returns a result, the agent loop drops
-# a one-shot system reminder right after the ToolEvent so the citation rule
-# is the most recent thing the model sees before composing its reply. Small
-# models (Gemma-class) won't reliably follow a rule that lives only in the
-# system prompt.
-_CITATION_TOOL_PREFIXES: tuple[str, ...] = ("kb__",)
-_CITATION_REMINDER = (
-    "You just received results from a knowledge-base tool. Every claim in "
-    "your next reply that draws on these results MUST be wrapped as "
-    '<citation id="ID_FROM_RECORD">claim sentence</citation>, copying the '
-    "`id` field verbatim from each record. Untagged paraphrase of kb "
-    "content is not acceptable. The closing </citation> is required."
-)
-
-
-_CITATION_MAX_RETRIES = 1
+from benchclaw.providers.base import LLMProvider
+from benchclaw.session import Session, SessionManager, SystemEvent, UserEvent
 
 
 class AgentLoop:
@@ -101,23 +79,7 @@ class AgentLoop:
             agent_config=self.config,
         )
         self.compactor = Compactor(provider, self.config, self.prompt_builder)
-
-    async def _run_tool_and_post(
-        self,
-        tc: ToolCallRequest,
-        call_ctx: ToolContext,
-        addr: MessageAddress,
-    ) -> None:
-        try:
-            result = await self.tools.execute(tc.name, tc.arguments, call_ctx)
-        except asyncio.CancelledError:
-            result = "Cancelled."
-        except Exception as e:
-            result = f"Error executing {tc.name}: {e}"
-        await self.bus.publish_inbound(
-            addr,
-            ToolResultEvent(tool_call_id=tc.id, tool_name=tc.name, result=result),
-        )
+        self.response = ResponseHandler(bus, self.tools, self.config)
 
     @staticmethod
     def _collapse_user_messages(messages: list[InboundMessage]) -> UserEvent:
@@ -167,152 +129,6 @@ class AgentLoop:
         build = self.prompt_builder.build(session, addr, pending_media)
         self.cache_monitor.observe(addr, build)
         return build
-
-    @staticmethod
-    def _stringify_tool_result(result: object) -> str:
-        """Coerce a tool result to a string for the trace.
-
-        We deliberately do NOT truncate or reflow here — the channel needs
-        the raw text to extract structured payloads (e.g. kb_records for
-        the citation listing). Display-time truncation belongs in the
-        channel.
-        """
-        return result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
-
-    async def _apply_llm_response(
-        self,
-        response: LLMResponse,
-        session: Session,
-        tracker: ToolCallTracker,
-        call_ctx: ToolContext,
-        addr: MessageAddress,
-        state: AddressState,
-    ) -> TurnOutcome:
-        usage = response.usage
-        logger.info(
-            f"LLM response for {addr}: "
-            f"{usage.get('prompt_tokens', '?')} prompt, "
-            f"{usage.get('completion_tokens', '?')} completion, "
-            f"{usage.get('total_tokens', '?')} total / {self.config.context_window} budget"
-        )
-        content = (response.content or "").rstrip("\n")
-        if response.has_tool_calls:
-            tool_call_dicts = [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)},
-                }
-                for tc in response.tool_calls
-            ]
-            session.append(
-                AssistantEvent(
-                    content=content,
-                    tool_calls=tool_call_dicts,
-                    reasoning_content=response.reasoning_content,
-                )
-            )
-            for tc in response.tool_calls:
-                args_str = json.dumps(tc.arguments, ensure_ascii=False)
-                logger.info(f"Tool call (background): {tc.name}({args_str[:200]})")
-                state.tool_call_trace.append(
-                    ToolCallTrace(id=tc.id, name=tc.name, arguments=dict(tc.arguments))
-                )
-                task = asyncio.create_task(
-                    self._run_tool_and_post(tc, call_ctx, addr),
-                    name=f"tool-{tc.id[:8]}",
-                )
-                tracker.add(tc.id, tc.name, task)
-            if content:
-                await self.bus.publish_outbound(
-                    OutboundMessage(
-                        address=addr,
-                        content=content,
-                        metadata={"tool_calls": list(state.tool_call_trace)},
-                    )
-                )
-            return TurnOutcome.DONE
-
-        if not content:
-            if self._prior_turn_was_terminal(session):
-                logger.info(
-                    f"LLM returned empty response for {addr} after a terminal tool call — no nudge"
-                )
-                return TurnOutcome.DONE
-            logger.warning(
-                f"LLM returned empty response (no text, no tool calls) for {addr} — injecting nudge"
-            )
-            await self.bus.publish_inbound(
-                addr,
-                SystemMessageEvent(
-                    content="You did not provide a text response. Please respond to the user now."
-                ),
-            )
-            return TurnOutcome.DONE
-        bad_ids, bad_refs, kb_records = cit.validate_citations(content, session.events)
-        if bad_ids:
-            if state.citation_retries < _CITATION_MAX_RETRIES:
-                state.citation_retries += 1
-                # Keep the bad reply in history so the model sees what it
-                # produced; the system reminder critiques it directly.
-                session.append(AssistantEvent(content=content))
-                valid_str = (
-                    ", ".join(sorted(kb_records))
-                    if kb_records
-                    else "(none — call a kb tool first if you need to cite)"
-                )
-                logger.warning(
-                    f"Invalid citations from {addr}: {', '.join(bad_ids)} "
-                    f"(retry {state.citation_retries}/{_CITATION_MAX_RETRIES})"
-                )
-                await self.bus.publish_inbound(
-                    addr,
-                    SystemMessageEvent(
-                        content=(
-                            f"Citation ids {', '.join(bad_ids)} are not in any kb "
-                            f"result in this session. Valid ids: {valid_str}. "
-                            "Rewrite the reply using only valid ids, or drop the "
-                            "unsupported claims."
-                        )
-                    ),
-                )
-                return TurnOutcome.RETRY_QUEUED
-            logger.warning(
-                f"Invalid citations from {addr} after {_CITATION_MAX_RETRIES} "
-                f"retries: {', '.join(bad_ids)}; publishing with verifiability "
-                "postscript."
-            )
-            content = cit.unverified_postscript(content, bad_refs)
-
-        session.append(AssistantEvent(content=content))
-        preview = content[:120] + "..." if len(content) > 120 else content
-        logger.info(f"Response to {addr}: {preview}")
-        await self.bus.publish_outbound(
-            OutboundMessage(
-                address=addr,
-                content=content,
-                metadata={"tool_calls": list(state.tool_call_trace)},
-            )
-        )
-        return TurnOutcome.DONE
-
-    def _prior_turn_was_terminal(self, session: Session) -> bool:
-        """Did the most recent assistant turn consist only of terminal-when-lone tool calls?
-
-        Used to suppress the empty-response nudge when the model has already
-        delivered the user-facing reply via a tool (e.g. ``send_media``).
-        """
-        for event in reversed(session.events):
-            if not isinstance(event, AssistantEvent):
-                continue
-            if not event.tool_calls:
-                return False
-            for tc in event.tool_calls:
-                name = tc.get("function", {}).get("name", "")
-                if not self.tools.is_terminal_when_lone(name):
-                    return False
-            return True
-        return False
 
     @staticmethod
     def _flush_pending_system_events(session: Session, state: AddressState) -> None:
@@ -373,17 +189,17 @@ class AgentLoop:
             tracker.handle_result(result, session)
             for entry in state.tool_call_trace:
                 if entry.id == result.tool_call_id:
-                    entry.result = self._stringify_tool_result(result.result)
+                    entry.result = stringify_tool_result(result.result)
                     break
-            if any(result.tool_name.startswith(p) for p in _CITATION_TOOL_PREFIXES):
+            if any(result.tool_name.startswith(p) for p in CITATION_TOOL_PREFIXES):
                 nudge_citations = True
         if batch.tool_results and not tracker.pending:
             self._flush_pending_system_events(session, state)
             # One reminder per batch is enough: dropping it once right before
             # the LLM call is what makes the rule "current" in context.
             if nudge_citations:
-                session.append(SystemEvent(content=_CITATION_REMINDER))
-            if self._prior_turn_was_terminal(session):
+                session.append(SystemEvent(content=CITATION_REMINDER))
+            if self.response.prior_turn_was_terminal(session):
                 # The prior assistant turn used only terminal_when_lone
                 # tools (e.g. send_media), which deliver the user-visible
                 # reply directly. Calling the LLM again invites it to
@@ -439,7 +255,7 @@ class AgentLoop:
         response = await self._call_provider(addr, build.messages)
         if response is None:
             return TurnOutcome.DONE
-        return await self._apply_llm_response(response, session, tracker, call_ctx, addr, state)
+        return await self.response.apply(response, session, tracker, call_ctx, addr, state)
 
     async def _address_loop(self, addr: MessageAddress) -> None:
         session = self.sessions.get(addr)
