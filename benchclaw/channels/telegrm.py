@@ -92,12 +92,6 @@ def _normalize_emoji(emoji: str) -> str:
     return emoji.replace(_VARIATION_SELECTOR_16, "")
 
 
-# Hard cap on per-user message-map entries. Once exceeded, the oldest entries
-# (already-expired tombstones first) are dropped entirely so memory stays
-# bounded even in long-lived chats.
-_MESSAGE_MAP_HARD_CAP = 1000
-
-
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -113,7 +107,6 @@ class TelegramConfig(ChannelConfig):
     rate_limit_msgs: int = 30
     rate_limit_window_seconds: int = 600
     soft_split_chars: int = 3500
-    message_map_ttl_seconds: int = 24 * 3600
 
     def make_channel(
         self,
@@ -135,6 +128,21 @@ class TelegramConfig(ChannelConfig):
 
 
 @dataclass
+class _ReplyRecord:
+    """Raw bits of an outbound assistant turn, kept under the Telegram
+    message_id of the first segment we sent. Citations and kb_records are
+    re-derived on demand in the reaction handlers (see _reaction_sources).
+
+    This intentionally stores the *unstripped* content — i.e. what the LLM
+    emitted, including any ``<citation>`` markers — so the SOURCES_REACTION
+    can re-parse it without any TTL/tombstone state to manage.
+    """
+
+    content: str
+    tool_calls: list[ToolCallTrace]
+
+
+@dataclass
 class _UserState:
     chat_id: int
     cite: bool = True
@@ -143,7 +151,7 @@ class _UserState:
     rate_window: deque[float] = field(default_factory=deque)
     rate_blocked_warned: bool = False
     last_user_message_id: int | None = None
-    cite_store: cit.CitationStore[int] = field(default_factory=cit.CitationStore[int])
+    replies: dict[int, _ReplyRecord] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -274,13 +282,7 @@ class TelegramChannel(BaseChannel):
         key = str(chat_id)
         st = self._users.get(key)
         if st is None:
-            st = _UserState(
-                chat_id=chat_id,
-                cite_store=cit.CitationStore[int](
-                    ttl_seconds=self.config.message_map_ttl_seconds,
-                    hard_cap=_MESSAGE_MAP_HARD_CAP,
-                ),
-            )
+            st = _UserState(chat_id=chat_id)
             self._users[key] = st
         return st
 
@@ -620,7 +622,7 @@ class TelegramChannel(BaseChannel):
         addr = self._addr(chat.id)
         await self.bus.publish_inbound(addr, SessionControlEvent(action="reset"))
         st = self._user_state(chat.id)
-        st.cite_store.clear()
+        st.replies.clear()
         st.seen_first_citation = False
         await msg.reply_text("Conversation cleared.")
 
@@ -634,7 +636,7 @@ class TelegramChannel(BaseChannel):
         addr = self._addr(chat.id)
         await self.bus.publish_inbound(addr, SessionControlEvent(action="forget"))
         st = self._user_state(chat.id)
-        st.cite_store.clear()
+        st.replies.clear()
         st.seen_first_citation = False
         await msg.reply_text(
             "Your storage has been deleted. Re-authenticate with /auth <code> to continue."
@@ -859,25 +861,28 @@ class TelegramChannel(BaseChannel):
             return
 
         st = self._user_state(chat_id)
+        # Strip <citation> markup for display, but keep the raw content so
+        # the SOURCES_REACTION can re-derive citations on demand from
+        # st.replies[message_id]. Same story for tool_calls.
         text, citations = cit.strip_citations(msg.content)
         raw_tool_calls = msg.metadata.get("tool_calls") if msg.metadata else None
-        tool_calls: list[ToolCallTrace] = list(raw_tool_calls or [])
+        record = _ReplyRecord(content=msg.content, tool_calls=list(raw_tool_calls or []))
 
-        # Outbound media (e.g. send_media tool) bypasses mermaid routing.
         if msg.media:
-            await self._send_media_message(msg, text, chat_id, st, citations, tool_calls)
-            return
+            # Outbound media (e.g. send_media tool) bypasses mermaid routing.
+            sent_id = await self._send_media_message(msg, text, chat_id)
+        else:
+            sent_id = await self._send_text_with_mermaid(chat_id, text)
 
-        await self._send_text_with_mermaid(chat_id, st, text, citations, tool_calls)
+        if sent_id is not None:
+            st.replies[sent_id] = record
+            if citations and not st.seen_first_citation:
+                st.seen_first_citation = True
+                await self._safe_send_text(
+                    chat_id, f"(react {SOURCES_REACTION} to any reply for sources)"
+                )
 
-    async def _send_text_with_mermaid(
-        self,
-        chat_id: int,
-        st: _UserState,
-        text: str,
-        citations: list[cit.Citation],
-        tool_calls: list[ToolCallTrace],
-    ) -> None:
+    async def _send_text_with_mermaid(self, chat_id: int, text: str) -> int | None:
         blocks = mermaid_renderer.extract_blocks(text)
         # Build a list of segments: ('text', str) or ('mmd', RenderedDiagram)
         segments: list[tuple[str, Any]] = []
@@ -924,13 +929,7 @@ class TelegramChannel(BaseChannel):
                 if sent and first_msg_id is None:
                     first_msg_id = sent
 
-        if first_msg_id is not None:
-            st.cite_store.record(first_msg_id, citations=citations, tool_calls=tool_calls)
-            if citations and not st.seen_first_citation:
-                st.seen_first_citation = True
-                await self._safe_send_text(
-                    chat_id, f"(react {SOURCES_REACTION} to any reply for sources)"
-                )
+        return first_msg_id
 
     async def _send_html(self, chat_id: int, body: str) -> int | None:
         if not self._app:
@@ -968,10 +967,7 @@ class TelegramChannel(BaseChannel):
         msg: OutboundMessage,
         text: str,
         chat_id: int,
-        st: _UserState,
-        citations: list[cit.Citation],
-        tool_calls: list[ToolCallTrace],
-    ) -> None:
+    ) -> int | None:
         assert self._app
         try:
             if self.media_repo and not Path(msg.media[0]).is_absolute():
@@ -1001,9 +997,10 @@ class TelegramChannel(BaseChannel):
                     sent = await self._app.bot.send_audio(audio=fh, **send_kwargs)
                 else:
                     sent = await self._app.bot.send_document(document=fh, **send_kwargs)
-            st.cite_store.record(sent.message_id, citations=citations, tool_calls=tool_calls)
+            return sent.message_id
         except Exception as e:
             logger.error(f"Error sending Telegram media: {e}")
+            return None
 
     # ---- typing indicator -------------------------------------------------
 
@@ -1068,17 +1065,16 @@ class TelegramChannel(BaseChannel):
         # 👍/👎/❓/🔁 reserved for future, no-op for now.
 
     async def _reaction_sources(self, message_id: int, st: _UserState, chat_id: int) -> None:
-        entry = st.cite_store.lookup(message_id)
         if not self._app:
             return
         # All replies are threaded onto the original bot message the user
         # reacted on, so the response is anchored even after intervening
         # chatter. allow_sending_without_reply on the helper handles the case
         # where the original message has been deleted.
-        if entry is None:
-            # Either we never tracked this message (untracked / bot restart)
-            # or the entry aged past the hard cap. Don't claim "expired" —
-            # we genuinely don't know if it ever existed.
+        record = st.replies.get(message_id)
+        if record is None:
+            # We don't track replies past process restart, /clear, or
+            # /forgetme. Don't pretend we know more than that.
             await self._safe_send_text(
                 chat_id,
                 "I don't have a record of that message. It may be from a previous "
@@ -1086,23 +1082,16 @@ class TelegramChannel(BaseChannel):
                 reply_to_message_id=message_id,
             )
             return
-        if entry.expired:
-            await self._safe_send_text(
-                chat_id,
-                "Sources for that reply have expired — ask again and I'll re-cite.",
-                reply_to_message_id=message_id,
-            )
-            return
-        if not entry.citations:
+        _, citations = cit.strip_citations(record.content)
+        if not citations:
             await self._safe_send_text(
                 chat_id,
                 "That reply didn't cite any sources.",
                 reply_to_message_id=message_id,
             )
             return
-        rendered = cit.render_list(
-            entry.citations[:5], entry.kb_records, fmt=cit.RenderFormat.TELEGRAM_HTML
-        )
+        kb_records = cit.extract_kb_records(record.tool_calls)
+        rendered = cit.render_list(citations[:5], kb_records, fmt=cit.RenderFormat.TELEGRAM_HTML)
         await self._safe_send_text(
             chat_id,
             rendered,
@@ -1121,8 +1110,8 @@ class TelegramChannel(BaseChannel):
             logger.debug(f"setMessageReaction failed: {e}")
 
     async def _reaction_trace(self, message_id: int, st: _UserState, chat_id: int) -> None:
-        entry = st.cite_store.lookup(message_id)
-        if entry is None:
+        record = st.replies.get(message_id)
+        if record is None:
             await self._safe_send_text(
                 chat_id,
                 "I don't have a record of that message. It may be from a previous "
@@ -1130,20 +1119,13 @@ class TelegramChannel(BaseChannel):
                 reply_to_message_id=message_id,
             )
             return
-        if entry.expired:
-            await self._safe_send_text(
-                chat_id,
-                "Tool trace for that reply has expired.",
-                reply_to_message_id=message_id,
-            )
-            return
-        if not entry.tool_calls:
+        if not record.tool_calls:
             await self._safe_send_text(
                 chat_id, "No tool calls for that reply.", reply_to_message_id=message_id
             )
             return
         lines: list[str] = []
-        for tc in entry.tool_calls[:10]:
+        for tc in record.tool_calls[:10]:
             args_text = ", ".join(f"{k}={v!r}" for k, v in list(tc.arguments.items())[:3])
             if len(args_text) > 120:
                 args_text = args_text[:119] + "…"

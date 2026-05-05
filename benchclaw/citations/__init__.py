@@ -1,10 +1,10 @@
-"""Channel-agnostic citation parsing, storage, and rendering.
+"""Channel-agnostic citation parsing and rendering.
 
-See spec/CITATIONS.md. Telegram is the first consumer; other channels
-(Claude Code, SMTP email, WhatsApp) wire up the same surface by
-calling ``strip_citations`` on outbound text, recording the parsed
-citations in a per-channel ``CitationStore``, and ``render_list``-ing
-them in their preferred dialect when the user asks for sources.
+Pure-string transforms with no per-message state. Channels keep their
+own minimal `message_id → raw_outbound_record` index so a reaction
+on an old reply can re-derive citations on demand by running
+``strip_citations`` on the original assistant content and
+``extract_kb_records`` on the tool-call trace.
 """
 
 from benchclaw.citations.parsing import (
@@ -13,12 +13,9 @@ from benchclaw.citations.parsing import (
     strip_citations,
 )
 from benchclaw.citations.render import RenderFormat, render_list
-from benchclaw.citations.store import CitationEntry, CitationStore
 
 __all__ = [
     "Citation",
-    "CitationEntry",
-    "CitationStore",
     "RenderFormat",
     "extract_kb_records",
     "render_list",
