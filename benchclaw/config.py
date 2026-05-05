@@ -42,6 +42,9 @@ class AgentConfig(BaseModel):
     model: str = "anthropic/claude-opus-4-5"
     max_tokens: int = 2048
     temperature: float = 0.7
+    top_p: float | None = None
+    top_k: int | None = None
+    enable_thinking: bool | None = None
     max_tool_iterations: int = 20
     context_window: int = 24000
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)

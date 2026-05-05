@@ -111,6 +111,9 @@ class ScriptedProvider(LLMProvider):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        enable_thinking: bool | None = None,
     ) -> LLMResponse:
         self.calls.append({"messages": messages, "tools": tools, "model": model})
         idx = min(self._cursor, len(self._script) - 1)

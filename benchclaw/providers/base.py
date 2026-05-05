@@ -46,6 +46,9 @@ class LLMProvider(ABC):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        enable_thinking: bool | None = None,
     ) -> LLMResponse:
         """
         Send a chat completion request.
@@ -56,6 +59,13 @@ class LLMProvider(ABC):
             model: Model identifier (provider-specific).
             max_tokens: Maximum tokens in response.
             temperature: Sampling temperature.
+            top_p: Nucleus sampling cutoff (forwarded if not None).
+            top_k: Top-k sampling cutoff (forwarded via extra_body for
+                vLLM-style backends if not None).
+            enable_thinking: For models with a thinking-mode toggle in the
+                chat template (e.g. Gemma), passes
+                ``chat_template_kwargs={"enable_thinking": <bool>}`` via
+                ``extra_body``. None means leave the template default.
 
         Returns:
             LLMResponse with content and/or tool calls.

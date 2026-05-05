@@ -75,10 +75,26 @@ class LiteLLMProvider(LLMProvider):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        enable_thinking: bool | None = None,
     ) -> LLMResponse:
         assert max_tokens >= 1
         assert temperature >= 0
         model = model or self.default_model
+
+        kwargs: dict[str, Any] = {}
+        if top_p is not None:
+            kwargs["top_p"] = top_p
+        # `top_k` and chat-template flags aren't in the OpenAI schema; vLLM
+        # accepts them via `extra_body`. OpenRouter ignores unknown extras.
+        extra_body: dict[str, Any] = {}
+        if top_k is not None:
+            extra_body["top_k"] = top_k
+        if enable_thinking is not None:
+            extra_body["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
+        if extra_body:
+            kwargs["extra_body"] = extra_body
 
         try:
             response = await acompletion(
@@ -91,6 +107,7 @@ class LiteLLMProvider(LLMProvider):
                 extra_headers=self._config.extra_headers,
                 tools=tools,
                 custom_llm_provider=self._backend.litellm_provider,
+                **kwargs,
             )
             assert isinstance(response, litellm.ModelResponse)
             return self._parse_response(response)

@@ -238,6 +238,9 @@ class AgentLoop:
                 model=self.config.model,
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
+                top_p=self.config.top_p,
+                top_k=self.config.top_k,
+                enable_thinking=self.config.enable_thinking,
             )
         except Exception as e:
             logger.error(f"LLM error for {addr}: {e}")
@@ -403,6 +406,9 @@ class AgentLoop:
                 model=summarize_model,
                 max_tokens=_SUMMARIZE_MAX_TOKENS,
                 temperature=0.3,
+                top_p=self.config.top_p,
+                top_k=self.config.top_k,
+                enable_thinking=False if self.config.enable_thinking else None,
             )
         except Exception as e:
             logger.error(f"Summarization failed for {addr}: {e}")
