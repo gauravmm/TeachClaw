@@ -31,6 +31,15 @@ from typing import Literal
 from loguru import logger
 
 _FENCE_RE = re.compile(r"```mermaid\s*\n(.*?)```", re.DOTALL)
+# Match `id[label]` where label has no quote/shape-modifier prefix. We only
+# quote the *plain rectangle* form: `id[/.../]` (parallelogram), `id[(.)]`
+# (stadium), `id[[..]]` (subroutine), and the already-quoted `id["..."]`
+# variants are left alone — wrapping them would change the rendered shape.
+_NODE_RECT_LABEL_RE = re.compile(r"(\b[A-Za-z_][\w]*)\[([^\]\n]*)\]")
+# Characters that, if present in an unquoted rectangle label, re-trigger
+# Mermaid's shape parser mid-token and break the diagram. Most reported
+# cases are parens (e.g. "Regulatory Tech (RegTech)").
+_SHAPE_TRIGGERS = set("()[]{}")
 _DEFAULT_TIMEOUT = 5.0
 _MAX_DIAGRAMS = 2
 _MAX_DIM = 2048
@@ -54,6 +63,35 @@ class RenderedDiagram:
     png_path: Path | None = None
     error: str | None = None
     source: str = ""
+
+
+def sanitize_source(source: str) -> str:
+    """Quote rectangle node labels that would otherwise break the parser.
+
+    Mermaid lets you write ``id[label]`` for a plain rectangle, but if the
+    label contains shape-meaningful characters like ``()`` (rounded /
+    stadium / circle shapes) or ``[]`` / ``{}``, the parser switches
+    shape mid-token and errors out — e.g. ``B[Regulatory Tech (RegTech)]``
+    fails because ``(RegTech)`` looks like the start of a rounded box.
+    Wrapping the label in double quotes (``B["Regulatory Tech (RegTech)"]``)
+    is the documented escape hatch.
+
+    We only touch the unquoted plain-rectangle form. Already-quoted
+    labels and labels that start with a shape modifier (``[/...``,
+    ``[(...``, ``[[...``, ``[\\...``) are left alone — quoting those would
+    silently change the rendered shape.
+    """
+
+    def _quote(match: re.Match) -> str:
+        node_id, label = match.group(1), match.group(2)
+        if not label or label[0] in '"/\\([{':
+            return match.group(0)
+        if not any(c in label for c in _SHAPE_TRIGGERS):
+            return match.group(0)
+        escaped = label.replace("\\", "\\\\").replace('"', '\\"')
+        return f'{node_id}["{escaped}"]'
+
+    return _NODE_RECT_LABEL_RE.sub(_quote, source)
 
 
 def extract_blocks(text: str) -> list[MermaidBlock]:
@@ -110,6 +148,7 @@ async def render(
     mmdc_path: str | None = None,
 ) -> RenderedDiagram:
     """Render one Mermaid block to PNG via mmdc. Cached by (source, theme)."""
+    source = sanitize_source(source)
     cache = cache_dir(workspace)
     key = _cache_key(source, theme)
     out_path = cache / f"{key}.png"

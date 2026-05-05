@@ -213,3 +213,32 @@ async def test_render_second_call_hits_cache_without_mmdc(
     second = await mermaid_renderer.render(SAMPLE_FLOWCHART, tmp_path)
     assert second.status == "ok"
     assert second.png_path == first.png_path
+
+
+def test_sanitize_quotes_rectangle_label_with_parens():
+    src = "flowchart LR\n    B --> BV[Regulatory Tech (RegTech) and AML monitoring]"
+    out = mermaid_renderer.sanitize_source(src)
+    assert 'BV["Regulatory Tech (RegTech) and AML monitoring"]' in out
+
+
+def test_sanitize_leaves_already_quoted_labels_alone():
+    src = 'flowchart LR\n    A["Already (quoted)"] --> B[plain]'
+    assert mermaid_renderer.sanitize_source(src) == src
+
+
+def test_sanitize_leaves_shape_modifier_prefixes_alone():
+    # Parallelogram, stadium, subroutine — quoting these would change the
+    # rendered shape, so we must not touch them even if they contain parens.
+    src = "flowchart LR\n    A[/parallelogram/] --> B[(stadium)] --> C[[subroutine]]"
+    assert mermaid_renderer.sanitize_source(src) == src
+
+
+def test_sanitize_no_op_on_clean_label():
+    src = "flowchart LR\n    A[Clean label] --> B[Another]"
+    assert mermaid_renderer.sanitize_source(src) == src
+
+
+def test_sanitize_escapes_embedded_double_quotes():
+    src = 'flowchart LR\n    A[He said "hi" (loud)]'
+    out = mermaid_renderer.sanitize_source(src)
+    assert 'A["He said \\"hi\\" (loud)"]' in out
