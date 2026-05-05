@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -122,10 +123,11 @@ class SendMediaTool(Tool):
         addr = _require_address(ctx)
         ctx.media_repo.resolve_file(addr, path)  # validates path exists
         await ctx.bus.publish_outbound(OutboundMessage(address=addr, content=caption, media=[path]))
-        return (
-            f"Media and caption delivered to {addr}. The caption was sent as the "
-            "message text — do not send a follow-up text reply this turn."
-        )
+        # Return a compact JSON status so the model has no prose to echo
+        # back to the user. Earlier copy ("...do not send a follow-up text
+        # reply...") read like a finished sentence, and Gemma occasionally
+        # posted it verbatim.
+        return json.dumps({"status": "sent", "turn_complete": True, "path": path})
 
 
 class AnnotateMediaTool(Tool):

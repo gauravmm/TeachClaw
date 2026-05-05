@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -44,8 +45,8 @@ async def test_send_media_uses_current_address(tmp_path: Path):
     result = await SendMediaTool().execute(ctx, path=rel, caption="hello")
     outbound = await bus.consume_outbound(channel="telegram")
 
-    assert "telegram:123" in result
-    assert "follow-up" in result
+    payload = json.loads(result)
+    assert payload == {"status": "sent", "turn_complete": True, "path": rel}
     assert isinstance(outbound, OutboundMessage)
     assert outbound.address == addr
     assert outbound.media == [rel]
@@ -65,8 +66,12 @@ async def test_send_media_resolves_shared_root(tmp_path: Path):
     result = await SendMediaTool().execute(ctx, path="cuteness/cats/fluffy.png", caption="aww")
     outbound = await bus.consume_outbound(channel="telegram")
 
-    assert "telegram:123" in result
-    assert "follow-up" in result
+    payload = json.loads(result)
+    assert payload == {
+        "status": "sent",
+        "turn_complete": True,
+        "path": "cuteness/cats/fluffy.png",
+    }
     assert outbound.media == ["cuteness/cats/fluffy.png"]
     assert outbound.content == "aww"
 
