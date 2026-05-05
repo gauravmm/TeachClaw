@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 
 from loguru import logger
 
+from benchclaw.agent.prompt import PromptBuild
 from benchclaw.bus import MessageAddress
 
 
@@ -71,18 +72,10 @@ class PromptCacheMonitor:
     _last: dict[MessageAddress, _Snapshot] = field(default_factory=dict)
     _warned: dict[MessageAddress, set[str]] = field(default_factory=dict)
 
-    def observe(
-        self,
-        addr: MessageAddress,
-        messages: list[dict[str, object]],
-        stable_prefix_end: int,
-    ) -> None:
-        """Compare the new stable prefix against the previous turn's snapshot.
-
-        ``stable_prefix_end`` is the exclusive index up to which the prefix
-        should be cache-stable: everything before the synthetic injection
-        and the latest user turn.
-        """
+    def observe(self, addr: MessageAddress, build: PromptBuild) -> None:
+        """Compare the new stable prefix against the previous turn's snapshot."""
+        messages = build.messages
+        stable_prefix_end = build.stable_prefix_end
         if stable_prefix_end <= 0 or not messages:
             return
 

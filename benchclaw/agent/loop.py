@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from pathlib import Path
 
 from loguru import logger
@@ -12,9 +13,14 @@ from benchclaw import citations as cit
 from benchclaw import personalities
 from benchclaw import storage as storage_layout
 from benchclaw.agent.cache_monitor import PromptCacheMonitor
-from benchclaw.agent.context import build_system_prompt
 from benchclaw.agent.dump import dump_messages
-from benchclaw.agent.loop_state import AddressState, BatchApplication, ToolCallTracker
+from benchclaw.agent.loop_state import (
+    AddressState,
+    BatchApplication,
+    ToolCallTracker,
+    TurnOutcome,
+)
+from benchclaw.agent.prompt import PromptBuild, PromptBuilder
 from benchclaw.agent.tools.base import ToolContext
 from benchclaw.agent.tools.mcp_manager import MCPManager
 from benchclaw.agent.tools.registry import ToolRegistry
@@ -36,13 +42,11 @@ from benchclaw.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from benchclaw.session import (
     AssistantEvent,
     ConversationEvent,
-    RenderOptions,
     Session,
     SessionManager,
     SystemEvent,
     UserEvent,
 )
-from benchclaw.utils import now_aware
 
 _SUMMARIZE_SYSTEM_PROMPT = """\
 You are a conversation summarizer for an agentic AI assistant.
@@ -105,10 +109,15 @@ class AgentLoop:
             bus=bus,
             media_repo=media_repo,
         )
-        self.master_ctx = master_ctx
         mcp_manager = MCPManager(config.mcp_servers) if config.mcp_servers else None
         self.tools = ToolRegistry(config.tools, master_ctx, mcp_manager=mcp_manager)
         self.cache_monitor = PromptCacheMonitor()
+        self.prompt_builder = PromptBuilder(
+            config.workspace_path,
+            tools=self.tools,
+            media_repo=media_repo,
+            agent_config=self.config,
+        )
 
     async def _run_tool_and_post(
         self,
@@ -129,22 +138,15 @@ class AgentLoop:
 
     @staticmethod
     def _collapse_user_messages(messages: list[InboundMessage]) -> UserEvent:
-        if len(messages) == 1:
-            message = messages[0]
-            return UserEvent(
-                timestamp=message.timestamp,
-                content=message.content,
-                sender_id=message.sender_id,
-                media=message.media,
-                media_metadata=message.media_metadata,
-                metadata=message.metadata,
-            )
-        parts = [f"[{m.sender_id}] {m.content}" for m in messages if m.content]
         first = messages[0]
+        if len(messages) == 1:
+            content = first.content
+        else:
+            content = "\n".join(f"[{m.sender_id}] {m.content}" for m in messages if m.content)
         return UserEvent(
             timestamp=first.timestamp,
             sender_id=first.sender_id,
-            content="\n".join(parts),
+            content=content,
             media=[path for m in messages for path in m.media],
             media_metadata=[item for m in messages for item in m.media_metadata],
             metadata=first.metadata,
@@ -186,110 +188,15 @@ class AgentLoop:
     def _input_budget(self) -> int:
         return max(self.config.context_window - self.config.max_tokens, 1)
 
-    def _render_options(self) -> RenderOptions:
-        elide_tools: tuple[str, ...] = ()
-        if self.config.compaction.elide_chunks_after_turn:
-            elide_tools = tuple(self.config.compaction.elide_tool_names)
-        return RenderOptions(elide_tool_names=elide_tools)
-
-    def _build_prompt_and_messages(
+    def _build_prompt(
         self,
         session: Session,
         addr: MessageAddress,
         pending_media: list[str] | None,
-    ) -> list[dict[str, object]]:
-        storage_root = storage_layout.storage_root(self.workspace_path, addr)
-        persona = personalities.read_personality(self.workspace_path, addr)
-        prompt = build_system_prompt(
-            self.workspace_path,
-            tools=self.tools.values(),
-            channel=addr.channel,
-            chat_id=addr.chat_id,
-            session_label=session.describe_current_session(),
-            chunk_elision_active=self.config.compaction.elide_chunks_after_turn,
-            profile_text=storage_layout.read_profile(self.workspace_path, addr),
-            storage_path=str(storage_root.expanduser().resolve()),
-            model=self.config.model,
-            context_window=self.config.context_window,
-        )
-        messages = session.render_llm_messages(prompt, self._render_options())
-        listing = storage_layout.listing_for_user(self.workspace_path, addr)
-        current_time = now_aware().strftime("%Y-%m-%d %H:%M (%A) %z")
-        media_blocks = (
-            self.media_repo.build_media_blocks(addr, pending_media)
-            if (pending_media and self.media_repo)
-            else None
-        )
-        out, stable_prefix_end = self._inject_tail(
-            messages,
-            listing=listing,
-            current_time=current_time,
-            persona_overlay=persona.overlay,
-            media_blocks=media_blocks,
-        )
-        self.cache_monitor.observe(addr, out, stable_prefix_end)
-        return out
-
-    @staticmethod
-    def _inject_tail(
-        messages: list[dict[str, object]],
-        *,
-        listing: str | None,
-        current_time: str | None,
-        persona_overlay: str | None,
-        media_blocks: list[dict[str, object]] | None,
-    ) -> tuple[list[dict[str, object]], int]:
-        """Attach turn-local context to the latest user turn.
-
-        Returns ``(messages, stable_prefix_end)`` where ``stable_prefix_end``
-        is the exclusive index up to which the prefix should be cache-stable
-        across turns: everything before the synthetic injection (when one was
-        added) or before the latest user message (when nothing was injected).
-
-        The synthetic message carries ``<current_time>``,
-        ``<storage_listing>``, and ``<persona>``; it goes in right before
-        the most recent user turn so the cacheable system-prompt prefix
-        stays stable. Media blocks are prepended to the latest user
-        message's content, promoting plain text into a content-block list
-        when needed.
-        """
-        last_user_idx = next(
-            (i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"),
-            None,
-        )
-        persona_text = (persona_overlay or "").strip() or None
-        has_synthetic = bool(listing or current_time or persona_text)
-        if last_user_idx is None or (not has_synthetic and not media_blocks):
-            return list(messages), last_user_idx if last_user_idx is not None else len(messages)
-
-        out = list(messages)
-        if media_blocks:
-            user_msg = dict(out[last_user_idx])
-            existing = user_msg.get("content", "")
-            if isinstance(existing, list):
-                user_msg["content"] = [*media_blocks, *existing]
-            else:
-                user_msg["content"] = [*media_blocks, {"type": "text", "text": existing}]
-            out[last_user_idx] = user_msg
-
-        if not has_synthetic:
-            return out, last_user_idx
-
-        parts: list[str] = []
-        if current_time:
-            parts.append(f"<current_time>{current_time}</current_time>")
-        if listing:
-            parts.append(f"<storage_listing>\n{listing}\n</storage_listing>")
-        if persona_text:
-            parts.append(f"<persona>\n{persona_text}\n</persona>")
-        ctx_msg: dict[str, object] = {
-            "role": "user",
-            "content": "\n".join(parts),
-        }
-        out.insert(last_user_idx, ctx_msg)
-        # After insert, the synthetic message sits at last_user_idx and the
-        # stable prefix is everything strictly before it.
-        return out, last_user_idx
+    ) -> PromptBuild:
+        build = self.prompt_builder.build(session, addr, pending_media)
+        self.cache_monitor.observe(addr, build)
+        return build
 
     @staticmethod
     def _last_user_event_index(events: list[ConversationEvent]) -> int:
@@ -314,7 +221,7 @@ class AgentLoop:
         # take actions, only to compress.
         history_messages = session._render_history(
             events_to_summarize,
-            options=self._render_options(),
+            options=self.prompt_builder.render_options(),
         )
         summarize_messages: list[dict[str, object]] = [
             {"role": "system", "content": _SUMMARIZE_SYSTEM_PROMPT},
@@ -404,7 +311,7 @@ class AgentLoop:
         call_ctx: ToolContext,
         addr: MessageAddress,
         state: AddressState,
-    ) -> None:
+    ) -> TurnOutcome:
         usage = response.usage
         logger.info(
             f"LLM response for {addr}: "
@@ -448,14 +355,14 @@ class AgentLoop:
                         metadata={"tool_calls": list(state.tool_call_trace)},
                     )
                 )
-            return
+            return TurnOutcome.DONE
 
         if not content:
             if self._prior_turn_was_terminal(session):
                 logger.info(
                     f"LLM returned empty response for {addr} after a terminal tool call — no nudge"
                 )
-                return
+                return TurnOutcome.DONE
             logger.warning(
                 f"LLM returned empty response (no text, no tool calls) for {addr} — injecting nudge"
             )
@@ -465,7 +372,7 @@ class AgentLoop:
                     content="You did not provide a text response. Please respond to the user now."
                 ),
             )
-            return
+            return TurnOutcome.DONE
         bad_ids, bad_refs, kb_records = cit.validate_citations(content, session.events)
         if bad_ids:
             if state.citation_retries < _CITATION_MAX_RETRIES:
@@ -482,7 +389,6 @@ class AgentLoop:
                     f"Invalid citations from {addr}: {', '.join(bad_ids)} "
                     f"(retry {state.citation_retries}/{_CITATION_MAX_RETRIES})"
                 )
-                state.expecting_followup_turn = True
                 await self.bus.publish_inbound(
                     addr,
                     SystemMessageEvent(
@@ -494,7 +400,7 @@ class AgentLoop:
                         )
                     ),
                 )
-                return
+                return TurnOutcome.RETRY_QUEUED
             logger.warning(
                 f"Invalid citations from {addr} after {_CITATION_MAX_RETRIES} "
                 f"retries: {', '.join(bad_ids)}; publishing with verifiability "
@@ -512,6 +418,7 @@ class AgentLoop:
                 metadata={"tool_calls": list(state.tool_call_trace)},
             )
         )
+        return TurnOutcome.DONE
 
     def _prior_turn_was_terminal(self, session: Session) -> bool:
         """Did the most recent assistant turn consist only of terminal-when-lone tool calls?
@@ -549,7 +456,6 @@ class AgentLoop:
         state.tool_call_trace = []
         state.iteration_count = 0
         state.citation_retries = 0
-        state.expecting_followup_turn = False
         state.pending_system_events.clear()
 
     def _apply_control_event(
@@ -569,8 +475,6 @@ class AgentLoop:
         # action == "forget" — Literal type narrows here; pyright knows it.
         root = storage_layout.storage_root(self.workspace_path, addr)
         if root.exists():
-            import shutil
-
             try:
                 shutil.rmtree(root)
                 logger.info(f"Storage forgotten for {addr}: removed {root}")
@@ -650,20 +554,16 @@ class AgentLoop:
         call_ctx: ToolContext,
         addr: MessageAddress,
         state: AddressState,
-        pending_media: list[str] | None = None,
-    ) -> None:
-        if pending_media is None:
-            pending_media = []
-        llm_messages = self._build_prompt_and_messages(session, addr, pending_media)
-        if await self._maybe_compact_proactive(session, addr, llm_messages):
-            llm_messages = self._build_prompt_and_messages(session, addr, pending_media)
-        dump_messages(self.debug_dump_dir, addr, llm_messages)
-        if pending_media:
-            pending_media.clear()
-        response = await self._call_provider(addr, llm_messages)
+    ) -> TurnOutcome:
+        build = self._build_prompt(session, addr, state.pending_media)
+        if await self._maybe_compact_proactive(session, addr, build.messages):
+            build = self._build_prompt(session, addr, state.pending_media)
+        dump_messages(self.debug_dump_dir, addr, build.messages)
+        state.pending_media.clear()
+        response = await self._call_provider(addr, build.messages)
         if response is None:
-            return
-        await self._apply_llm_response(response, session, tracker, call_ctx, addr, state)
+            return TurnOutcome.DONE
+        return await self._apply_llm_response(response, session, tracker, call_ctx, addr, state)
 
     async def _address_loop(self, addr: MessageAddress) -> None:
         session = self.sessions.get(addr)
@@ -676,7 +576,7 @@ class AgentLoop:
         )
         write_roots: tuple[Path, ...] = ()
         call_ctx = ToolContext(
-            workspace=self.tools._master_ctx.workspace,
+            workspace=self.workspace_path,
             bus=self.bus,
             media_repo=self.media_repo,
             address=addr,
@@ -686,13 +586,17 @@ class AgentLoop:
             write_roots=write_roots,
         )
         state = AddressState()
+        # When the previous turn queued a follow-up (e.g. citation pushback),
+        # keep the typing bubble on through the next consume so it doesn't
+        # drop between the rejected reply and the follow-up call.
+        last_outcome = TurnOutcome.DONE
 
         while True:
-            if not tracker.pending and not state.expecting_followup_turn:
+            if not tracker.pending and last_outcome is TurnOutcome.DONE:
                 await self.bus.publish_outbound(TypingEvent(addr, is_typing=False))
 
             batch = await self.bus.consume_inbound_batch(address=addr)
-            state.expecting_followup_turn = False
+            last_outcome = TurnOutcome.DONE
             batch_result = self._apply_batch(batch, session, tracker, addr, state)
             if batch_result.start_typing:
                 await self.bus.publish_outbound(TypingEvent(addr, is_typing=True))
@@ -704,14 +608,7 @@ class AgentLoop:
                 continue
             state.iteration_count += 1
 
-            await self._process_llm_turn(
-                session,
-                tracker,
-                call_ctx,
-                addr,
-                state,
-                pending_media=state.pending_media,
-            )
+            last_outcome = await self._process_llm_turn(session, tracker, call_ctx, addr, state)
 
     async def run(self) -> None:
         async with self.sessions:

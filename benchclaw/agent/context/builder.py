@@ -1,4 +1,4 @@
-"""System-prompt assembly. One call site: AgentLoop._build_prompt_and_messages."""
+"""System-prompt assembly. One call site: PromptBuilder.build."""
 
 from __future__ import annotations
 

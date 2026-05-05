@@ -105,7 +105,7 @@ def test_personality_overlay_injected_into_synthetic_tail(tmp_path: Path) -> Non
     session = Session(addr)
     session.append(UserEvent(content="hi"))
 
-    messages = loop._build_prompt_and_messages(session, addr, pending_media=[])
+    messages = loop._build_prompt(session, addr, pending_media=[]).messages
     system = messages[0]["content"]
     assert isinstance(system, str)
     assert "Series-B VC partner" not in system

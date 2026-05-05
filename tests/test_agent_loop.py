@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from benchclaw.agent.loop import _CITATION_MAX_RETRIES, AgentLoop
-from benchclaw.agent.loop_state import AddressState, ToolCallTracker
+from benchclaw.agent.loop_state import AddressState, ToolCallTracker, TurnOutcome
 from benchclaw.agent.tools.base import ToolContext
 from benchclaw.bus import (
     InboundMessage,
@@ -89,7 +89,7 @@ async def test_process_llm_turn_sends_visible_response(tmp_path: Path) -> None:
 
     async with loop.tools:
         call_ctx = ToolContext(
-            workspace=loop.tools._master_ctx.workspace,
+            workspace=loop.workspace_path,
             bus=loop.bus,
             media_repo=loop.media_repo,
             address=addr,
@@ -132,7 +132,7 @@ async def test_process_llm_turn_records_tool_calls_as_events(tmp_path: Path) -> 
 
     async with loop.tools:
         call_ctx = ToolContext(
-            workspace=loop.tools._master_ctx.workspace,
+            workspace=loop.workspace_path,
             bus=loop.bus,
             media_repo=loop.media_repo,
             address=addr,
@@ -292,7 +292,7 @@ async def test_proactive_compaction_summarizes_when_estimate_exceeds_threshold(
 
     async with loop.tools:
         call_ctx = ToolContext(
-            workspace=loop.tools._master_ctx.workspace,
+            workspace=loop.workspace_path,
             bus=loop.bus,
             media_repo=loop.media_repo,
             address=addr,
@@ -349,7 +349,7 @@ async def test_no_compaction_when_under_threshold(tmp_path: Path) -> None:
 
     async with loop.tools:
         call_ctx = ToolContext(
-            workspace=loop.tools._master_ctx.workspace,
+            workspace=loop.workspace_path,
             bus=loop.bus,
             media_repo=loop.media_repo,
             address=addr,
@@ -446,9 +446,9 @@ async def test_apply_batch_skips_llm_after_terminal_tool(tmp_path: Path) -> None
 
 @pytest.mark.asyncio
 async def test_invalid_citation_pushback_keeps_typing_indicator_on(tmp_path: Path) -> None:
-    """A pushback retry sets expecting_followup_turn so the address loop
-    skips its top-of-loop typing=False publish, leaving the bubble on
-    until the second LLM call completes."""
+    """A pushback retry returns RETRY_QUEUED so the address loop skips its
+    top-of-loop typing=False publish, leaving the bubble on until the second
+    LLM call completes."""
     bad_response = LLMResponse(content='Answer <citation id="ghost">claim</citation>.')
     loop = _make_loop(tmp_path, bad_response)
     addr = MessageAddress("telegram", "1")
@@ -459,15 +459,17 @@ async def test_invalid_citation_pushback_keeps_typing_indicator_on(tmp_path: Pat
 
     async with loop.tools:
         call_ctx = ToolContext(
-            workspace=loop.tools._master_ctx.workspace,
+            workspace=loop.workspace_path,
             bus=loop.bus,
             media_repo=loop.media_repo,
             address=addr,
             background_tasks=tracker.tasks,
         )
-        await loop._apply_llm_response(bad_response, session, tracker, call_ctx, addr, state)
+        outcome = await loop._apply_llm_response(
+            bad_response, session, tracker, call_ctx, addr, state
+        )
 
-    assert state.expecting_followup_turn is True
+    assert outcome is TurnOutcome.RETRY_QUEUED
 
 
 @pytest.mark.asyncio
@@ -492,7 +494,7 @@ async def test_invalid_citation_triggers_retry_then_postscript(tmp_path: Path) -
 
     async with loop.tools:
         call_ctx = ToolContext(
-            workspace=loop.tools._master_ctx.workspace,
+            workspace=loop.workspace_path,
             bus=loop.bus,
             media_repo=loop.media_repo,
             address=addr,

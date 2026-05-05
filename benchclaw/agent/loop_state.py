@@ -9,9 +9,22 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from enum import Enum
 
 from benchclaw.bus import ToolCallTrace, ToolResultEvent
 from benchclaw.session import Session, SystemEvent, ToolEvent
+
+
+class TurnOutcome(Enum):
+    """Result of one LLM turn, signaling how the address loop should bridge
+    into the next iteration."""
+
+    DONE = "done"
+    # The turn ended by queuing an inbound SystemMessageEvent that will
+    # trigger a follow-up LLM call (e.g. a citation pushback). The address
+    # loop should keep the typing bubble on so it doesn't drop between the
+    # rejected reply and the follow-up call.
+    RETRY_QUEUED = "retry_queued"
 
 
 @dataclass
@@ -26,12 +39,6 @@ class AddressState:
     # for citing a kb id that wasn't in the trace. Capped to keep one bad
     # reply from looping forever.
     citation_retries: int = 0
-    # Set when we've just queued an inbound SystemMessageEvent that will
-    # trigger another LLM call (e.g. a citation pushback). The address
-    # loop honors this by skipping its top-of-loop typing=False publish
-    # so the bubble doesn't drop between the rejected reply and the
-    # follow-up call.
-    expecting_followup_turn: bool = False
 
 
 @dataclass(frozen=True)
@@ -71,7 +78,7 @@ class ToolCallTracker:
         )
         self._in_flight.clear()
 
-    def handle_result(self, event: ToolResultEvent, session: Session) -> bool:
+    def handle_result(self, event: ToolResultEvent, session: Session) -> None:
         self._tasks.pop(event.tool_call_id, None)
         session.append(
             ToolEvent(
@@ -82,7 +89,7 @@ class ToolCallTracker:
         )
         if event.tool_call_id in self._in_flight:
             del self._in_flight[event.tool_call_id]
-            return not self._in_flight
+            return
 
         session.append(
             SystemEvent(
@@ -93,4 +100,3 @@ class ToolCallTracker:
                 )
             )
         )
-        return True
