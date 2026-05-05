@@ -9,7 +9,7 @@ demonstrates the surface before asking for the auth code.
 
 ## Current behavior
 
-In `benchclaw/channels/telegrm.py` (`_cmd_start`):
+In `benchclaw/channels/telegrm/commands.py` (`cmd_start`):
 
 ```
 Welcome to the AI-in-Business class assistant.
@@ -75,29 +75,46 @@ is `/auth`, so anything beyond explaining-what-this-is is noise.
 
 The prompt-bait stage. Now the example questions do something, so we
 list ones that exercise the full surface — citations, diagrams, and
-the persona overlay — in one shot.
+the persona overlay — in one shot. Each example is a tap-to-run inline
+keyboard button; a fourth button dismisses the welcome.
+
+Message body:
 
 ```
-You're in. Three things to try:
+You're in. Three things to try (tap a button to run one):
 
-• "Can you explain the value chain of AI direct-to-consumer
-  marketing?"
-   → walks the value chain end-to-end and draws the Mermaid
-     diagram; cites the lecture chunks it pulls from.
-
-• "Map AI use cases for a regional bank to a 2x2 of effort vs.
-  impact."
-   → renders the 2x2 as a Mermaid diagram, with citations on the
-     classification calls.
-
-• "Compare build vs. buy for a recommendation engine, as a
-  skeptical CFO."
-   → demonstrates the persona overlay. Try /personality to make
-     it stick across the whole session.
+• Value chain demo — walks the value chain of AI direct-to-
+  consumer marketing end-to-end, draws the Mermaid diagram, and
+  cites the lecture chunks it pulls from.
+• 2x2 framework demo — renders a 2x2 of AI use cases for a
+  regional bank as a Mermaid diagram, with citations on the
+  classification calls.
+• Build-vs-buy as Skeptical CFO — demonstrates the persona overlay
+  on a recommendation-engine question. Try /personality to make a
+  persona stick across the whole session.
 
 React ❤ to any reply to see the source citations; react 🔥 to see
 which tools I called for that reply.
 ```
+
+Inline keyboard, one button per row:
+
+```
+[ Value chain demo →     ]
+[ 2x2 framework demo →   ]
+[ Build vs. buy (CFO) →  ]
+[ Dismiss                ]
+```
+
+Tap behaviour:
+
+- **Example button** (callback ``e:N``) — answer the callback to
+  clear the loading spinner, edit the welcome message to drop the
+  keyboard (so the row can't be tapped a second time), then run the
+  prompt through ``_handle_message`` exactly as if the user had
+  typed it. The agent loop produces the reply.
+- **Dismiss button** (callback ``d:``) — delete the welcome message
+  outright.
 
 The first example is the user's nominated demo question; it's the
 strongest because it triggers all three surfaces (text + diagram +
@@ -105,19 +122,19 @@ citation) in one turn. The other two cover the remaining axes.
 
 ### Branching logic
 
-`_cmd_start` checks auth:
+`cmd_start` checks auth:
 
 ```python
-async def _cmd_start(self, update, _ctx):
-    if not await self._gate(update, allow_unauth=True):
+async def cmd_start(channel, update, _ctx):
+    if not await gate(channel, update, allow_unauth=True):
         return
     msg = update.effective_message
     if not msg:
         return
-    await self._refresh_command_menu()
-    addr = self._addr(update.effective_chat.id)
-    if auth_module.is_authenticated(self.workspace, addr):
-        await msg.reply_text(_POST_AUTH_WELCOME)
+    await refresh_command_menu(channel)
+    addr = channel.addr(update.effective_chat.id)
+    if auth_module.is_authenticated(channel.workspace, addr):
+        await msg.reply_text(_POST_AUTH_WELCOME, reply_markup=_post_auth_keyboard())
     else:
         await msg.reply_text(_PRE_AUTH_WELCOME)
 ```
@@ -127,8 +144,11 @@ user who comes in cold (no `/start`) and just sends the code lands
 on the same demo prompts:
 
 ```python
-# in _cmd_auth, after the success branch:
-await msg.reply_text("Authenticated.\n\n" + _POST_AUTH_WELCOME)
+# in cmd_auth, after the success branch:
+await msg.reply_text(
+    "Authenticated.\n\n" + _POST_AUTH_WELCOME,
+    reply_markup=_post_auth_keyboard(),
+)
 ```
 
 Drop the standalone "Authenticated. Ask me anything." line; the
@@ -152,31 +172,19 @@ diagram type, and the build-vs-buy example is paired with a persona
 hint (`as a skeptical CFO`) so the user notices personas exist before
 hunting for `/personality` in the menu.
 
-## Open questions
+## Resolved during review
 
-TODO: I want an Inline keyboard for the examples, including an option to dismiss.
-
-- **Inline keyboard for the examples?** Telegram supports inline
-  keyboards with callback buttons (we already use them for
-  `/personality`). Tapping a button could populate the chat input
-  with the example prompt, removing the copy-paste friction. Trade-
-  off: copy-paste is universal; callback-data prompts only work on
-  the official Telegram clients. I'd start with plain text and add
-  buttons if onboarding completion is low.
-- **Should `/help` mirror the post-auth welcome?** Today `/help` is
-  a one-liner about which commands exist. Once the post-auth welcome
-  carries the example prompts, `/help` could either (a) point at
-  `/start` ("send /start for examples"), (b) duplicate the example
-  block, or (c) stay terse and command-focused. (a) keeps a single
-  source of truth. TODO: (a) is fine, you can also mention /clear and /forgetme
-- **Discoverability hint after first citation.** The
-  `seen_first_citation` flag in `_UserState` already sends a one-shot
-  "(react ❤ to any reply for sources)" the first time a reply
-  contains a citation. With the post-auth welcome already mentioning
-  the ❤ reaction, this nudge is now redundant on the first reply but
-  still useful if the welcome was skipped (cold `/auth`). Keep it
-  for now; revisit if it's noisy. TODO: Keep the nudge.
-- **Personality preview in the welcome?** A nicer demo would show
-  the *same* prompt answered in two voices. Out of scope for the
-  welcome message, but a `/demo` command that takes a fixed prompt
-  through two personas would be a fun follow-up. TODO: drop this.
+- **Inline keyboard for the examples** — yes, with a Dismiss row.
+  Telegram callback buttons can't pre-fill the chat input, so tapping
+  an example *runs* the prompt rather than copy-pasting it: the bot
+  edits the welcome to drop the keyboard, then submits the prompt via
+  ``_handle_message``. Folded into Stage 2 above.
+- **`/help` after this lands** — point at `/start` for the example
+  list (single source of truth), and mention `/clear` and `/forgetme`
+  alongside the existing command summary. Folded into the
+  implementation below.
+- **Discoverability hint after first citation** — keep the existing
+  ``seen_first_citation`` one-shot. Even with the post-auth welcome
+  mentioning the ❤ reaction, the nudge still covers the cold-`/auth`
+  path where the welcome was skipped.
+- **Personality preview / `/demo` command** — dropped.
