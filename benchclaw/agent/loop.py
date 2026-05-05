@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import shutil
 from pathlib import Path
 
@@ -303,25 +304,23 @@ class AgentLoop:
             last_outcome = await self._process_llm_turn(session, tracker, call_ctx, addr, state)
 
     async def run(self) -> None:
-        async with self.sessions:
-            async with self.tools:
-                logger.info("Agent loop started")
-                new_addr_queue = self.bus.subscribe_new_addresses()
-                addr_tasks: dict[MessageAddress, asyncio.Task] = {}
+        async with contextlib.AsyncExitStack() as stack:
+            await stack.enter_async_context(self.sessions)
+            await stack.enter_async_context(self.tools)
+            logger.info("Agent loop started")
+            new_addr_queue = self.bus.subscribe_new_addresses()
 
-                async def _dispatch() -> None:
-                    while True:
-                        addr = await new_addr_queue.get()
-                        addr_tasks[addr] = asyncio.create_task(
-                            self._address_loop(addr), name=f"agent-{addr}"
-                        )
+            try:
+                async with asyncio.TaskGroup() as tg:
 
-                dispatch_task = asyncio.create_task(_dispatch())
-                try:
-                    await asyncio.get_event_loop().create_future()
-                except asyncio.CancelledError:
-                    for task in [dispatch_task, *addr_tasks.values()]:
-                        task.cancel()
-                    await asyncio.gather(
-                        dispatch_task, *addr_tasks.values(), return_exceptions=True
-                    )
+                    async def _dispatch() -> None:
+                        while True:
+                            addr = await new_addr_queue.get()
+                            tg.create_task(self._address_loop(addr), name=f"agent-{addr}")
+
+                    tg.create_task(_dispatch(), name="agent-dispatch")
+            except* asyncio.CancelledError:
+                # Cooperative shutdown: TaskGroup has already cancelled and
+                # awaited every per-address task plus the dispatcher; swallow
+                # the re-raised group so callers see a clean exit.
+                pass
