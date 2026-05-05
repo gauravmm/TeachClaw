@@ -466,6 +466,51 @@ def test_append_unverified_postscript_singular_and_plural() -> None:
 
 
 @pytest.mark.asyncio
+async def test_apply_batch_skips_llm_after_terminal_tool(tmp_path: Path) -> None:
+    """When the prior assistant turn used only terminal_when_lone tools
+    (e.g. send_media), the tool-result batch must NOT trigger another
+    LLM call — the tool already delivered the user-visible reply."""
+    from benchclaw.bus import InboundMessageBatch, ToolResultEvent
+    from benchclaw.session import ToolEvent
+
+    loop = _make_loop(tmp_path, LLMResponse(content="should not be called"))
+    addr = MessageAddress("telegram", "1")
+    session = Session(addr)
+    session.append(UserEvent(content="send the meme"))
+    session.append(
+        AssistantEvent(
+            content="",
+            tool_calls=[
+                {
+                    "id": "tc1",
+                    "type": "function",
+                    "function": {"name": "send_media", "arguments": "{}"},
+                }
+            ],
+        )
+    )
+    tracker = ToolCallTracker()
+    state = _AddressState()
+    tracker._in_flight["tc1"] = "send_media"
+    batch_obj = InboundMessageBatch(
+        tool_results=[
+            ToolResultEvent(
+                tool_call_id="tc1",
+                tool_name="send_media",
+                result='{"status": "sent", "turn_complete": true, "path": "memes/x.jpg"}',
+            )
+        ]
+    )
+
+    async with loop.tools:
+        result = loop._apply_batch(batch_obj, session, tracker, addr, state)
+
+    assert result.needs_llm is False
+    assert isinstance(session.events[-1], ToolEvent)
+    assert session.events[-1].tool_name == "send_media"
+
+
+@pytest.mark.asyncio
 async def test_invalid_citation_pushback_keeps_typing_indicator_on(tmp_path: Path) -> None:
     """A pushback retry sets expecting_followup_turn so the address loop
     skips its top-of-loop typing=False publish, leaving the bubble on

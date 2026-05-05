@@ -811,7 +811,14 @@ class AgentLoop:
             # the LLM call is what makes the rule "current" in context.
             if nudge_citations:
                 session.append(SystemEvent(content=_CITATION_REMINDER))
-            needs_llm = True
+            if self._prior_turn_was_terminal(session):
+                # The prior assistant turn used only terminal_when_lone
+                # tools (e.g. send_media), which deliver the user-visible
+                # reply directly. Calling the LLM again invites it to
+                # write a chatty echo on top — skip the follow-up turn.
+                logger.info(f"Skipping post-terminal LLM call for {addr}")
+            else:
+                needs_llm = True
 
         for event in batch.system_events:
             if tracker.pending:
