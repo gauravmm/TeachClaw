@@ -9,6 +9,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from benchclaw import citations as cit
 from benchclaw import personalities
 from benchclaw import storage as storage_layout
 from benchclaw.agent.cache_monitor import PromptCacheMonitor
@@ -84,6 +85,13 @@ class _AddressState:
     # Tool calls dispatched since the most recent user message, in order.
     # Reset whenever a new user message arrives.
     tool_call_trace: list[ToolCallTrace] = field(default_factory=list)
+    # How many times we've already pushed back on the model in this turn
+    # for citing a kb id that wasn't in the trace. Capped to keep one bad
+    # reply from looping forever.
+    citation_retries: int = 0
+
+
+_CITATION_MAX_RETRIES = 1
 
 
 @dataclass(frozen=True)
@@ -599,6 +607,42 @@ class AgentLoop:
                 ),
             )
             return
+        bad_ids, bad_refs = self._validate_citations(content, state.tool_call_trace)
+        if bad_ids:
+            if state.citation_retries < _CITATION_MAX_RETRIES:
+                state.citation_retries += 1
+                # Keep the bad reply in history so the model sees what it
+                # produced; the system reminder critiques it directly.
+                session.append(AssistantEvent(content=content))
+                valid_ids = sorted(cit.extract_kb_records(state.tool_call_trace).keys())
+                valid_str = (
+                    ", ".join(valid_ids)
+                    if valid_ids
+                    else "(none — call a kb tool first if you need to cite)"
+                )
+                logger.warning(
+                    f"Invalid citations from {addr}: {', '.join(bad_ids)} "
+                    f"(retry {state.citation_retries}/{_CITATION_MAX_RETRIES})"
+                )
+                await self.bus.publish_inbound(
+                    addr,
+                    SystemMessageEvent(
+                        content=(
+                            f"Citation ids {', '.join(bad_ids)} are not in the kb "
+                            f"results from this turn. Valid ids: {valid_str}. "
+                            "Rewrite the reply using only valid ids, or drop the "
+                            "unsupported claims."
+                        )
+                    ),
+                )
+                return
+            logger.warning(
+                f"Invalid citations from {addr} after {_CITATION_MAX_RETRIES} "
+                f"retries: {', '.join(bad_ids)}; publishing with verifiability "
+                "postscript."
+            )
+            content = self._append_unverified_postscript(content, bad_refs)
+
         session.append(AssistantEvent(content=content))
         preview = content[:120] + "..." if len(content) > 120 else content
         logger.info(f"Response to {addr}: {preview}")
@@ -608,6 +652,43 @@ class AgentLoop:
                 content=content,
                 metadata={"tool_calls": list(state.tool_call_trace)},
             )
+        )
+
+    @staticmethod
+    def _validate_citations(
+        content: str, tool_call_trace: list[ToolCallTrace]
+    ) -> tuple[list[str], list[int]]:
+        """Find ``<citation>`` ids in the content that aren't in the kb trace.
+
+        Returns ``(bad_ids, bad_refs)`` where ``bad_refs`` are the 1-indexed
+        reference numbers the user will see after :func:`strip_citations`
+        renders ``[N]`` markers — useful for telling the user *which*
+        citations are unverifiable. Both lists preserve first-appearance
+        order and contain no duplicates (``strip_citations`` already
+        dedupes by id).
+        """
+        _, citations = cit.strip_citations(content)
+        if not citations:
+            return [], []
+        valid = set(cit.extract_kb_records(tool_call_trace).keys())
+        bad_ids: list[str] = []
+        bad_refs: list[int] = []
+        for idx, c in enumerate(citations, start=1):
+            if c.id not in valid:
+                bad_ids.append(c.id)
+                bad_refs.append(idx)
+        return bad_ids, bad_refs
+
+    @staticmethod
+    def _append_unverified_postscript(content: str, bad_refs: list[int]) -> str:
+        if not bad_refs:
+            return content
+        if len(bad_refs) == 1:
+            head = f"Citation [{bad_refs[0]}] is"
+        else:
+            head = f"Citations {', '.join(f'[{n}]' for n in bad_refs)} are"
+        return (
+            content.rstrip() + f"\n\n_{head} not automatically verifiable. Check claims carefully._"
         )
 
     def _prior_turn_was_terminal(self, session: Session) -> bool:
@@ -648,6 +729,7 @@ class AgentLoop:
             state.pending_system_events.clear()
             state.tool_call_trace = []
             state.iteration_count = 0
+            state.citation_retries = 0
             logger.info(f"Session reset for {addr}")
         elif event.action == "forget":
             session.clear()
@@ -655,6 +737,7 @@ class AgentLoop:
             state.pending_system_events.clear()
             state.tool_call_trace = []
             state.iteration_count = 0
+            state.citation_retries = 0
             root = storage_layout.storage_root(self.workspace_path, addr)
             if root.exists():
                 import shutil
@@ -723,6 +806,7 @@ class AgentLoop:
             state.pending_media = list(user_event.media)
             state.iteration_count = 0
             state.tool_call_trace = []
+            state.citation_retries = 0
             needs_llm = True
 
         return _BatchApplication(needs_llm=needs_llm, start_typing=start_typing)

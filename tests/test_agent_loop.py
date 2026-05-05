@@ -5,9 +5,20 @@ from typing import Any
 
 import pytest
 
-from benchclaw.agent.loop import AgentLoop, ToolCallTracker, _AddressState
+from benchclaw.agent.loop import (
+    _CITATION_MAX_RETRIES,
+    AgentLoop,
+    ToolCallTracker,
+    _AddressState,
+)
 from benchclaw.agent.tools.base import ToolContext
-from benchclaw.bus import InboundMessage, MessageAddress, MessageBus, OutboundMessage
+from benchclaw.bus import (
+    InboundMessage,
+    MessageAddress,
+    MessageBus,
+    OutboundMessage,
+    ToolCallTrace,
+)
 from benchclaw.config import Config
 from benchclaw.media import MediaRepository
 from benchclaw.providers.base import LLMProvider, LLMResponse, ToolCallRequest
@@ -391,3 +402,93 @@ def test_render_options_elide_replaces_old_retrieval_results() -> None:
     assert len(tool_messages) == 2
     assert "elided" in tool_messages[0]["content"]
     assert tool_messages[1]["content"] == "big chunk body 2"
+
+
+def _kb_trace(*ids: str) -> list[ToolCallTrace]:
+    return [
+        ToolCallTrace(
+            id=f"tc-{i}",
+            name="kb__search",
+            arguments={"q": "x"},
+            result="\n".join(f'{{"id": "{cid}"}}' for cid in ids),
+        )
+        for i, _ in enumerate([ids])
+    ]
+
+
+def test_validate_citations_passes_when_all_ids_valid() -> None:
+    trace = _kb_trace("a", "b")
+    content = 'See <citation id="a">claim one</citation> and <citation id="b">claim two</citation>.'
+    bad_ids, bad_refs = AgentLoop._validate_citations(content, trace)
+    assert bad_ids == []
+    assert bad_refs == []
+
+
+def test_validate_citations_flags_unknown_ids_with_indexed_refs() -> None:
+    trace = _kb_trace("a", "b")
+    # First citation valid, second invalid → bad_ref points at [2].
+    content = 'See <citation id="a">good</citation> and <citation id="ghost">made up</citation>.'
+    bad_ids, bad_refs = AgentLoop._validate_citations(content, trace)
+    assert bad_ids == ["ghost"]
+    assert bad_refs == [2]
+
+
+def test_validate_citations_with_no_kb_calls_marks_everything_bad() -> None:
+    content = 'Citing <citation id="x">x</citation>.'
+    bad_ids, bad_refs = AgentLoop._validate_citations(content, [])
+    assert bad_ids == ["x"]
+    assert bad_refs == [1]
+
+
+def test_append_unverified_postscript_singular_and_plural() -> None:
+    one = AgentLoop._append_unverified_postscript("Hello.", [3])
+    assert one.endswith("_Citation [3] is not automatically verifiable. Check claims carefully._")
+    many = AgentLoop._append_unverified_postscript("Hello.", [2, 5])
+    assert many.endswith(
+        "_Citations [2], [5] are not automatically verifiable. Check claims carefully._"
+    )
+
+
+@pytest.mark.asyncio
+async def test_invalid_citation_triggers_retry_then_postscript(tmp_path: Path) -> None:
+    """Bad citation → one retry → second bad reply ships with postscript."""
+    bad_response = LLMResponse(content='Answer <citation id="ghost">claim</citation>.')
+    loop = _make_loop(tmp_path, bad_response)
+    addr = MessageAddress("telegram", "1")
+    session = Session(addr)
+    session.append(UserEvent(content="hi"))
+    tracker = ToolCallTracker()
+    state = _AddressState()
+    # Pretend kb returned only id "real" earlier this turn.
+    state.tool_call_trace = [
+        ToolCallTrace(
+            id="tc1",
+            name="kb__search",
+            arguments={},
+            result='{"id": "real"}',
+        )
+    ]
+
+    async with loop.tools:
+        call_ctx = ToolContext(
+            workspace=loop.tools._master_ctx.workspace,
+            bus=loop.bus,
+            media_repo=loop.media_repo,
+            address=addr,
+            background_tasks=tracker.tasks,
+        )
+        # First pass: bad citation → retry, no outbound, reminder injected.
+        await loop._apply_llm_response(bad_response, session, tracker, call_ctx, addr, state)
+        assert state.citation_retries == 1
+        assert loop.bus.outbound.get("telegram") is None or loop.bus.outbound["telegram"].empty()
+        # Inbound queue should now hold the SystemMessageEvent reminder.
+        assert addr in loop.bus.inbound and not loop.bus.inbound[addr].empty()
+
+        # Second pass: still bad → publish anyway with postscript.
+        await loop._apply_llm_response(bad_response, session, tracker, call_ctx, addr, state)
+        assert state.citation_retries == _CITATION_MAX_RETRIES
+        outbound_q = loop.bus.outbound["telegram"]
+        published = outbound_q.get_nowait()
+        assert isinstance(published, OutboundMessage)
+        assert "not automatically verifiable" in published.content
+        assert "[1]" in published.content
