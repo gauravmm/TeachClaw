@@ -40,7 +40,11 @@ async def on_message(
 
     st = channel.user_state(chat.id)
 
-    if not allow_rate(channel, st, chat.id):
+    # In groups, rate-limit each member independently so one chatty user
+    # can't starve the room. In DMs there's only one member anyway, so
+    # per-sender keying degenerates to per-chat behavior.
+    sender_label = user.first_name or user.username or str(user.id)
+    if not allow_rate(channel, st, chat.id, str(user.id), sender_label):
         return
 
     if st.in_flight:
@@ -133,18 +137,31 @@ async def on_message(
     )
 
 
-def allow_rate(channel: "TelegramChannel", st: UserState, chat_id: int) -> bool:
+def allow_rate(
+    channel: "TelegramChannel",
+    st: UserState,
+    chat_id: int,
+    sender_key: str,
+    sender_label: str,
+) -> bool:
+    from collections import deque
+
     now = time.monotonic()
     window = channel.config.rate_limit_window_seconds
-    while st.rate_window and now - st.rate_window[0] > window:
-        st.rate_window.popleft()
-    if len(st.rate_window) >= channel.config.rate_limit_msgs:
-        if not st.rate_blocked_warned and channel._app:
-            st.rate_blocked_warned = True
+    rate_window = st.rate_windows.setdefault(sender_key, deque())
+    while rate_window and now - rate_window[0] > window:
+        rate_window.popleft()
+    if len(rate_window) >= channel.config.rate_limit_msgs:
+        if sender_key not in st.rate_blocked_warned and channel._app:
+            st.rate_blocked_warned.add(sender_key)
             asyncio.create_task(
-                post(channel, chat_id, "take a breath — too many messages just now.")
+                post(
+                    channel,
+                    chat_id,
+                    f"{sender_label}: take a breath — too many messages just now.",
+                )
             )
         return False
-    st.rate_window.append(now)
-    st.rate_blocked_warned = False
+    rate_window.append(now)
+    st.rate_blocked_warned.discard(sender_key)
     return True

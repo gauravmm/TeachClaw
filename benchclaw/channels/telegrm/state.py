@@ -89,7 +89,14 @@ class UserState:
     cite: bool = True
     in_flight: bool = False
     seen_first_citation: bool = False
-    rate_window: deque[float] = field(default_factory=deque)
-    rate_blocked_warned: bool = False
     last_user_message_id: int | None = None
     replies: dict[int, ReplyRecord] = field(default_factory=dict)
+    # Per-sender rate-limit windows. The key is the Telegram user id (as
+    # str) for the sender; in DMs there's only ever one key, in groups one
+    # per member. Keeping the map flat here works for both shapes.
+    rate_windows: dict[str, deque[float]] = field(default_factory=dict)
+    rate_blocked_warned: set[str] = field(default_factory=set)
+    # First-wins gate for reaction handlers in groups: every (message_id,
+    # normalized_emoji) we've already responded to. Reactions in DMs can
+    # also use this so repeat ❤ taps don't re-render the citation block.
+    served_reactions: set[tuple[int, str]] = field(default_factory=set)

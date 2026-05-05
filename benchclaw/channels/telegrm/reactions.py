@@ -34,8 +34,6 @@ async def on_reaction(
     reaction = update.message_reaction
     if not reaction or not update.effective_chat or not update.effective_user:
         return
-    if update.effective_chat.type != "private":
-        return
     addr = channel.addr(update.effective_chat.id)
     if not auth_module.is_authenticated(channel.workspace, addr):
         return
@@ -54,11 +52,20 @@ async def dispatch_reaction(
     chat_id: int,
 ) -> None:
     normalized = normalize_emoji(emoji)
+    if normalized != SOURCES_NORM and normalized != TRACE_NORM:
+        # 👍/👎/❓/🔁 reserved for future, no-op for now.
+        return
+    # First-wins: once we've already posted the citation/trace block for
+    # a given message + emoji, ignore subsequent reactions (especially in
+    # groups, where multiple members may react to the same reply).
+    served_key = (message_id, normalized)
+    if served_key in st.served_reactions:
+        return
+    st.served_reactions.add(served_key)
     if normalized == SOURCES_NORM:
         await reaction_sources(channel, message_id, st, chat_id)
     elif normalized == TRACE_NORM:
         await reaction_trace(channel, message_id, st, chat_id)
-    # 👍/👎/❓/🔁 reserved for future, no-op for now.
 
 
 async def reaction_sources(

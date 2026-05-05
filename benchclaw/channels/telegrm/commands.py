@@ -26,7 +26,12 @@ from benchclaw import auth as auth_module
 from benchclaw import personalities
 from benchclaw import storage as storage_layout
 from benchclaw.bus import MessageAddress, SessionControlEvent, SystemMessageEvent
-from benchclaw.channels.telegrm.auth_gate import gate
+from benchclaw.channels.telegrm.auth_gate import (
+    gate,
+    is_caller_group_admin,
+    is_group_chat,
+    is_group_eligible,
+)
 from benchclaw.channels.telegrm.config import ADMIN_COMMANDS, PUBLIC_COMMANDS
 from benchclaw.channels.telegrm.state import SOURCES_REACTION, TRACE_REACTION
 
@@ -48,6 +53,23 @@ _PRE_AUTH_WELCOME = (
     "• Adopt different personas (Skeptical CFO, VC Partner, McKinsey "
     "Analyst, Professor) — try /personality.\n\n"
     "To start, send /auth <code> using the code on the slide."
+)
+
+_GROUP_WELCOME_AUTHED = (
+    "I'm the AI-in-Business class assistant.\n\n"
+    "In this group:\n"
+    "• Mention me or reply to one of my messages to talk to me. I "
+    "ignore everything else.\n"
+    f"• React {SOURCES_REACTION} to any reply to see the source citations; "
+    f"react {TRACE_REACTION} to see which tools I called for that reply.\n"
+    "• Admins can /personality, /clear, or /forgetme this room."
+)
+
+_GROUP_WELCOME_PRE_AUTH = (
+    "I'm the AI-in-Business class assistant.\n\n"
+    "An admin must authenticate this room first: /auth <code> using the "
+    "code on the slide. (At least one bot operator must be a Telegram "
+    "admin in this group.)"
 )
 
 _POST_AUTH_WELCOME = (
@@ -179,7 +201,13 @@ async def cmd_start(
     # Republish the menu so users who saw the old command list from a
     # previous deployment get the current one.
     await refresh_command_menu(channel)
-    if auth_module.is_authenticated(channel.workspace, channel.addr(chat.id)):
+    authed = auth_module.is_authenticated(channel.workspace, channel.addr(chat.id))
+    if is_group_chat(update):
+        # Reduced welcome: no example keyboard (would spam everyone),
+        # no persona pitch (admins find it via the menu).
+        await msg.reply_text(_GROUP_WELCOME_AUTHED if authed else _GROUP_WELCOME_PRE_AUTH)
+        return
+    if authed:
         await msg.reply_text(_POST_AUTH_WELCOME, reply_markup=post_auth_keyboard())
     else:
         await msg.reply_text(_PRE_AUTH_WELCOME)
@@ -216,6 +244,10 @@ async def cmd_auth(
     chat = update.effective_chat
     if not (msg and user and chat):
         return
+    in_group = is_group_chat(update)
+    if in_group and not await is_group_eligible(channel, chat.id):
+        await msg.reply_text("This group isn't authorized for the assistant.")
+        return
     user_key = str(user.id)
     ok, lock_msg = channel._auth_limiter.check(user_key)
     if not ok:
@@ -244,15 +276,41 @@ async def cmd_auth(
     storage_layout.ensure_user_dirs(channel.workspace, addr)
     auth_module.write_marker(channel.workspace, addr, secret.code)
     channel._auth_limiter.record_success(user_key)
-    await msg.reply_text(
-        "Authenticated.\n\n" + _POST_AUTH_WELCOME, reply_markup=post_auth_keyboard()
-    )
+    if in_group:
+        await msg.reply_text("✅ group authenticated.\n\n" + _GROUP_WELCOME_AUTHED)
+    else:
+        await msg.reply_text(
+            "Authenticated.\n\n" + _POST_AUTH_WELCOME, reply_markup=post_auth_keyboard()
+        )
+
+
+async def _require_group_admin(
+    channel: "TelegramChannel", update: Update, command_label: str
+) -> bool:
+    """In groups, only chat admins may run state-mutating commands.
+
+    Returns True if the caller may proceed (DM, or admin in a group);
+    False if blocked (and posts a one-line note in that case).
+    """
+    if not is_group_chat(update):
+        return True
+    msg = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not (msg and user and chat):
+        return False
+    if await is_caller_group_admin(channel, chat.id, user.id):
+        return True
+    await msg.reply_text(f"{command_label} is admin-only in groups.")
+    return False
 
 
 async def cmd_personality(
     channel: "TelegramChannel", update: Update, _ctx: ContextTypes.DEFAULT_TYPE
 ) -> None:
     if not await gate(channel, update):
+        return
+    if not await _require_group_admin(channel, update, "/personality"):
         return
     msg = update.effective_message
     chat = update.effective_chat
@@ -309,6 +367,13 @@ async def _handle_personality_callback(channel: "TelegramChannel", query, chat, 
     if not auth_module.is_authenticated(channel.workspace, addr):
         await query.edit_message_text("Send /auth <code> first.")
         return
+    # In a group, the keyboard is visible to everyone but only admins may
+    # actually flip the persona. Telegram doesn't restrict callback taps
+    # by user, so re-check here.
+    if chat.type != "private" and query.from_user:
+        if not await is_caller_group_admin(channel, chat.id, query.from_user.id):
+            await query.answer("Admins only.", show_alert=True)
+            return
     chosen = personalities.write_personality(channel.workspace, addr, name)
     if chosen is None:
         await query.edit_message_text("Unknown personality.")
@@ -382,6 +447,8 @@ async def cmd_clear(
 ) -> None:
     if not await gate(channel, update):
         return
+    if not await _require_group_admin(channel, update, "/clear"):
+        return
     msg = update.effective_message
     chat = update.effective_chat
     if not (msg and chat):
@@ -391,6 +458,7 @@ async def cmd_clear(
     st = channel.user_state(chat.id)
     st.replies.clear()
     st.seen_first_citation = False
+    st.served_reactions.clear()
     await msg.reply_text("Conversation cleared.")
 
 
@@ -398,6 +466,8 @@ async def cmd_forgetme(
     channel: "TelegramChannel", update: Update, _ctx: ContextTypes.DEFAULT_TYPE
 ) -> None:
     if not await gate(channel, update, allow_unauth=True):
+        return
+    if not await _require_group_admin(channel, update, "/forgetme"):
         return
     msg = update.effective_message
     chat = update.effective_chat
@@ -408,9 +478,15 @@ async def cmd_forgetme(
     st = channel.user_state(chat.id)
     st.replies.clear()
     st.seen_first_citation = False
-    await msg.reply_text(
-        "Your storage has been deleted. Re-authenticate with /auth <code> to continue."
-    )
+    st.served_reactions.clear()
+    if is_group_chat(update):
+        await msg.reply_text(
+            "Group storage and auth wiped. Re-authenticate with /auth <code> to continue."
+        )
+    else:
+        await msg.reply_text(
+            "Your storage has been deleted. Re-authenticate with /auth <code> to continue."
+        )
 
 
 async def cmd_sources(
