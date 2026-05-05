@@ -34,6 +34,60 @@ if TYPE_CHECKING:
     from benchclaw.channels.telegrm.channel import TelegramChannel
 
 
+# ---- /start welcome strings + example keyboard -----------------------------
+# See spec/STARTFLOW.md. Stage 1 (pre-auth) explains the surface and asks for
+# /auth; Stage 2 (post-auth) lists three demo prompts behind tap-to-run inline
+# buttons + a Dismiss row.
+
+_PRE_AUTH_WELCOME = (
+    "Welcome — I'm the AI-in-Business class assistant.\n\n"
+    "I can:\n"
+    "• Answer questions about the lecture material with citations you can "
+    f"audit (react {SOURCES_REACTION} to any reply to see the sources).\n"
+    "• Draw diagrams when they help — value chains, 2x2s, flowcharts.\n"
+    "• Adopt different personas (Skeptical CFO, VC Partner, McKinsey "
+    "Analyst, Professor) — try /personality.\n\n"
+    "To start, send /auth <code> using the code on the slide."
+)
+
+_POST_AUTH_WELCOME = (
+    "You're in. Three things to try (tap a button to run one):\n\n"
+    "• Value chain demo — walks the value chain of AI direct-to-consumer "
+    "marketing end-to-end, draws the Mermaid diagram, and cites the lecture "
+    "chunks it pulls from.\n"
+    "• 2x2 framework demo — renders a 2x2 of AI use cases for a regional "
+    "bank as a Mermaid diagram, with citations on the classification calls.\n"
+    "• Build-vs-buy as Skeptical CFO — demonstrates the persona overlay on "
+    "a recommendation-engine question. Try /personality to make a persona "
+    "stick across the whole session.\n\n"
+    f"React {SOURCES_REACTION} to any reply to see the source citations; "
+    f"react {TRACE_REACTION} to see which tools I called for that reply."
+)
+
+# Indexed by callback_data ``e:N``; tapping a button submits the matching
+# prompt as if the user had typed it.
+EXAMPLE_PROMPTS: tuple[str, ...] = (
+    "Can you explain the value chain of AI direct-to-consumer marketing?",
+    "Map AI use cases for a regional bank to a 2x2 of effort vs. impact.",
+    "Compare build vs. buy for a recommendation engine, as a skeptical CFO.",
+)
+
+_EXAMPLE_BUTTON_LABELS: tuple[str, ...] = (
+    "Value chain demo →",
+    "2x2 framework demo →",
+    "Build vs. buy (CFO) →",
+)
+
+
+def post_auth_keyboard() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(label, callback_data=f"e:{i}")]
+        for i, label in enumerate(_EXAMPLE_BUTTON_LABELS)
+    ]
+    rows.append([InlineKeyboardButton("Dismiss", callback_data="d:")])
+    return InlineKeyboardMarkup(rows)
+
+
 # ---- menu + startup --------------------------------------------------------
 
 
@@ -119,20 +173,16 @@ async def cmd_start(
     if not await gate(channel, update, allow_unauth=True):
         return
     msg = update.effective_message
-    if not msg:
+    chat = update.effective_chat
+    if not (msg and chat):
         return
     # Republish the menu so users who saw the old command list from a
     # previous deployment get the current one.
     await refresh_command_menu(channel)
-    text = (
-        "Welcome to the AI-in-Business class assistant.\n\n"
-        "Try one of these to get started:\n"
-        "• What is a value chain, with an example from healthcare?\n"
-        "• Map AI use cases to a 2x2 of effort vs. business impact.\n"
-        "• Compare build vs. buy for a recommendation engine.\n\n"
-        "Authenticate first: send /auth <code> using the code on the slide."
-    )
-    await msg.reply_text(text)
+    if auth_module.is_authenticated(channel.workspace, channel.addr(chat.id)):
+        await msg.reply_text(_POST_AUTH_WELCOME, reply_markup=post_auth_keyboard())
+    else:
+        await msg.reply_text(_PRE_AUTH_WELCOME)
 
 
 async def cmd_help(
@@ -145,9 +195,13 @@ async def cmd_help(
         return
     text = (
         "I'm a small assistant for the AI-in-Business lecture.\n\n"
-        "Commands: /auth, /personality, /cite, /clear, /forgetme, /sources, /scope.\n"
-        f"React {SOURCES_REACTION} to one of my replies to see the source chunks; "
-        f"react {TRACE_REACTION} to see the tool-call trace for that reply."
+        "Send /start for example prompts you can tap to run.\n"
+        "Commands: /auth, /personality, /cite, /sources, /scope, "
+        "/clear (wipe this conversation), /forgetme (delete your data and "
+        "re-auth).\n"
+        f"React {SOURCES_REACTION} to one of my replies to see the source "
+        f"chunks; react {TRACE_REACTION} to see the tool-call trace for that "
+        "reply."
     )
     await msg.reply_text(text)
 
@@ -190,7 +244,9 @@ async def cmd_auth(
     storage_layout.ensure_user_dirs(channel.workspace, addr)
     auth_module.write_marker(channel.workspace, addr, secret.code)
     channel._auth_limiter.record_success(user_key)
-    await msg.reply_text("Authenticated. Ask me anything.")
+    await msg.reply_text(
+        "Authenticated.\n\n" + _POST_AUTH_WELCOME, reply_markup=post_auth_keyboard()
+    )
 
 
 async def cmd_personality(
@@ -227,16 +283,28 @@ async def cmd_personality(
 async def on_callback_query(
     channel: "TelegramChannel", update: Update, _ctx: ContextTypes.DEFAULT_TYPE
 ) -> None:
+    """Dispatch by callback_data prefix.
+
+    * ``p:<name>`` — persona button from /personality.
+    * ``e:<idx>`` — example-prompt button from the post-auth welcome.
+    * ``d:``      — Dismiss button on the post-auth welcome.
+    """
     query = update.callback_query
     if not query or not query.data:
         return
     await query.answer()
-    if not query.data.startswith("p:"):
-        return
-    name = query.data[2:]
     chat = update.effective_chat
     if not chat:
         return
+    if query.data.startswith("p:"):
+        await _handle_personality_callback(channel, query, chat, query.data[2:])
+    elif query.data.startswith("e:"):
+        await _handle_example_callback(channel, query, chat, query.data[2:])
+    elif query.data == "d:":
+        await _handle_dismiss_callback(query)
+
+
+async def _handle_personality_callback(channel: "TelegramChannel", query, chat, name: str) -> None:
     addr = channel.addr(chat.id)
     if not auth_module.is_authenticated(channel.workspace, addr):
         await query.edit_message_text("Send /auth <code> first.")
@@ -247,6 +315,52 @@ async def on_callback_query(
         return
     await announce_persona_switch(channel, addr, chosen)
     await query.edit_message_text(f"Personality set to {chosen.label}.")
+
+
+async def _handle_example_callback(channel: "TelegramChannel", query, chat, idx_str: str) -> None:
+    """Submit the indexed example prompt as if the user had typed it.
+
+    The keyboard is stripped first so the row can't be tapped twice; the
+    message body stays so the user keeps the welcome context.
+    """
+    addr = channel.addr(chat.id)
+    if not auth_module.is_authenticated(channel.workspace, addr):
+        await query.edit_message_text("Send /auth <code> first.")
+        return
+    try:
+        idx = int(idx_str)
+    except ValueError:
+        return
+    if not 0 <= idx < len(EXAMPLE_PROMPTS):
+        return
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception as e:
+        logger.debug(f"edit_message_reply_markup failed: {e}")
+
+    user = query.from_user
+    sender_id = str(user.id)
+    if user.username:
+        sender_id = f"{sender_id}|{user.username}"
+    await channel._handle_message(
+        sender_id=sender_id,
+        chat_id=str(chat.id),
+        content=EXAMPLE_PROMPTS[idx],
+        metadata={
+            "user_id": user.id,
+            "username": user.username,
+            "sender_label": user.first_name or user.username,
+            "is_group": False,
+            "source": "start_example_button",
+        },
+    )
+
+
+async def _handle_dismiss_callback(query) -> None:
+    try:
+        await query.delete_message()
+    except Exception as e:
+        logger.debug(f"delete_message failed: {e}")
 
 
 async def cmd_cite(

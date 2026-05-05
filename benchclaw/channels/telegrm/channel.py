@@ -166,7 +166,10 @@ class TelegramChannel(BaseChannel):
         for name, handler in cmds.items():
             self._app.add_handler(CommandHandler(name, handler))
 
-        self._app.add_handler(CallbackQueryHandler(self._on_callback_query, pattern=r"^p:"))
+        # Patterns: p:<persona> (persona pick), e:<idx> (example tap),
+        # d: (dismiss). Keep the regex tight so Telegram doesn't dispatch
+        # unrelated callbacks (e.g. from a future feature) here.
+        self._app.add_handler(CallbackQueryHandler(self._on_callback_query, pattern=r"^(p:|e:|d:)"))
 
         self._app.add_handler(
             MessageHandler(
