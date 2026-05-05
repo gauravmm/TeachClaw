@@ -607,14 +607,14 @@ class AgentLoop:
                 ),
             )
             return
-        bad_ids, bad_refs = self._validate_citations(content, state.tool_call_trace)
+        bad_ids, bad_refs = self._validate_citations(content, session.events)
         if bad_ids:
             if state.citation_retries < _CITATION_MAX_RETRIES:
                 state.citation_retries += 1
                 # Keep the bad reply in history so the model sees what it
                 # produced; the system reminder critiques it directly.
                 session.append(AssistantEvent(content=content))
-                valid_ids = sorted(cit.extract_kb_records(state.tool_call_trace).keys())
+                valid_ids = sorted(self._session_kb_records(session.events).keys())
                 valid_str = (
                     ", ".join(valid_ids)
                     if valid_ids
@@ -628,8 +628,8 @@ class AgentLoop:
                     addr,
                     SystemMessageEvent(
                         content=(
-                            f"Citation ids {', '.join(bad_ids)} are not in the kb "
-                            f"results from this turn. Valid ids: {valid_str}. "
+                            f"Citation ids {', '.join(bad_ids)} are not in any kb "
+                            f"result in this session. Valid ids: {valid_str}. "
                             "Rewrite the reply using only valid ids, or drop the "
                             "unsupported claims."
                         )
@@ -655,10 +655,36 @@ class AgentLoop:
         )
 
     @staticmethod
+    def _session_kb_records(events: list[ConversationEvent]) -> dict[str, dict]:
+        """Collect kb records from every kb-tool ToolEvent in the session.
+
+        We validate citations against the *full* session history rather than
+        the current-turn trace because the model can legitimately remember
+        an id from an earlier turn's kb__search. Render-time chunk elision
+        replaces the rendered tool content with a stub but leaves the
+        original event in the session, so this walk still finds the ids.
+        Compaction-with-summary is the one exception: events older than the
+        latest user message are replaced with a SummaryEvent, so any kb
+        ids cited from that pre-summary history will read as unverifiable.
+        """
+        trace = [
+            ToolCallTrace(
+                id=ev.tool_call_id,
+                name=ev.tool_name,
+                arguments={},
+                result=ev.content if isinstance(ev.content, str) else None,
+            )
+            for ev in events
+            if isinstance(ev, ToolEvent)
+        ]
+        return cit.extract_kb_records(trace)
+
+    @classmethod
     def _validate_citations(
-        content: str, tool_call_trace: list[ToolCallTrace]
+        cls, content: str, events: list[ConversationEvent]
     ) -> tuple[list[str], list[int]]:
-        """Find ``<citation>`` ids in the content that aren't in the kb trace.
+        """Find ``<citation>`` ids in the content that aren't in any kb result
+        seen in this session.
 
         Returns ``(bad_ids, bad_refs)`` where ``bad_refs`` are the 1-indexed
         reference numbers the user will see after :func:`strip_citations`
@@ -670,7 +696,7 @@ class AgentLoop:
         _, citations = cit.strip_citations(content)
         if not citations:
             return [], []
-        valid = set(cit.extract_kb_records(tool_call_trace).keys())
+        valid = set(cls._session_kb_records(events).keys())
         bad_ids: list[str] = []
         bad_refs: list[int] = []
         for idx, c in enumerate(citations, start=1):

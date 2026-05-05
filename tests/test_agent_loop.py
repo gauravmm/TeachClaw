@@ -17,7 +17,6 @@ from benchclaw.bus import (
     MessageAddress,
     MessageBus,
     OutboundMessage,
-    ToolCallTrace,
 )
 from benchclaw.config import Config
 from benchclaw.media import MediaRepository
@@ -404,31 +403,29 @@ def test_render_options_elide_replaces_old_retrieval_results() -> None:
     assert tool_messages[1]["content"] == "big chunk body 2"
 
 
-def _kb_trace(*ids: str) -> list[ToolCallTrace]:
+def _kb_events(*ids: str) -> list[ToolEvent]:
     return [
-        ToolCallTrace(
-            id=f"tc-{i}",
-            name="kb__search",
-            arguments={"q": "x"},
-            result="\n".join(f'{{"id": "{cid}"}}' for cid in ids),
+        ToolEvent(
+            tool_call_id="tc-0",
+            tool_name="kb__search",
+            content="\n".join(f'{{"id": "{cid}"}}' for cid in ids),
         )
-        for i, _ in enumerate([ids])
     ]
 
 
 def test_validate_citations_passes_when_all_ids_valid() -> None:
-    trace = _kb_trace("a", "b")
+    events = _kb_events("a", "b")
     content = 'See <citation id="a">claim one</citation> and <citation id="b">claim two</citation>.'
-    bad_ids, bad_refs = AgentLoop._validate_citations(content, trace)
+    bad_ids, bad_refs = AgentLoop._validate_citations(content, events)
     assert bad_ids == []
     assert bad_refs == []
 
 
 def test_validate_citations_flags_unknown_ids_with_indexed_refs() -> None:
-    trace = _kb_trace("a", "b")
+    events = _kb_events("a", "b")
     # First citation valid, second invalid → bad_ref points at [2].
     content = 'See <citation id="a">good</citation> and <citation id="ghost">made up</citation>.'
-    bad_ids, bad_refs = AgentLoop._validate_citations(content, trace)
+    bad_ids, bad_refs = AgentLoop._validate_citations(content, events)
     assert bad_ids == ["ghost"]
     assert bad_refs == [2]
 
@@ -438,6 +435,25 @@ def test_validate_citations_with_no_kb_calls_marks_everything_bad() -> None:
     bad_ids, bad_refs = AgentLoop._validate_citations(content, [])
     assert bad_ids == ["x"]
     assert bad_refs == [1]
+
+
+def test_validate_citations_accepts_ids_from_earlier_turn() -> None:
+    # A kb__search ran in turn 1; turn 2 has a new user message and the
+    # current-turn trace would be empty. Validation must walk the full
+    # session, not just the current turn, so the prior id stays valid.
+    events: list = [
+        UserEvent(content="turn 1"),
+        ToolEvent(
+            tool_call_id="tc1",
+            tool_name="kb__search",
+            content='{"id": "page-028"}',
+        ),
+        AssistantEvent(content="answered turn 1"),
+        UserEvent(content="turn 2 follow-up"),
+    ]
+    content = '<citation id="page-028">prior fact</citation>.'
+    bad_ids, _ = AgentLoop._validate_citations(content, events)
+    assert bad_ids == []
 
 
 def test_append_unverified_postscript_singular_and_plural() -> None:
@@ -457,17 +473,17 @@ async def test_invalid_citation_triggers_retry_then_postscript(tmp_path: Path) -
     addr = MessageAddress("telegram", "1")
     session = Session(addr)
     session.append(UserEvent(content="hi"))
+    # Seed a kb result in session history so the validator has something
+    # legitimate to compare "ghost" against.
+    session.append(
+        ToolEvent(
+            tool_call_id="tc1",
+            tool_name="kb__search",
+            content='{"id": "real"}',
+        )
+    )
     tracker = ToolCallTracker()
     state = _AddressState()
-    # Pretend kb returned only id "real" earlier this turn.
-    state.tool_call_trace = [
-        ToolCallTrace(
-            id="tc1",
-            name="kb__search",
-            arguments={},
-            result='{"id": "real"}',
-        )
-    ]
 
     async with loop.tools:
         call_ctx = ToolContext(
