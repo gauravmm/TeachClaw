@@ -32,12 +32,14 @@ async def notify_typing(channel: "TelegramChannel", event: TypingEvent) -> None:
 
 def start_typing(channel: "TelegramChannel", chat_id: str) -> None:
     stop_typing(channel, chat_id)
+    logger.info(f"Typing indicator: start chat={chat_id}")
     channel._typing_tasks[chat_id] = asyncio.create_task(_typing_loop(channel, chat_id))
 
 
 def stop_typing(channel: "TelegramChannel", chat_id: str) -> None:
     task = channel._typing_tasks.pop(chat_id, None)
     if task and not task.done():
+        logger.info(f"Typing indicator: stop chat={chat_id}")
         task.cancel()
 
 
@@ -51,4 +53,7 @@ async def _typing_loop(channel: "TelegramChannel", chat_id: str) -> None:
     except asyncio.CancelledError:
         pass
     except Exception as e:
-        logger.debug(f"Typing indicator stopped for {chat_id}: {e}")
+        # Bot lacking send-message permission, chat archived, etc.
+        # Surface at warning so silently-failing typing indicators are
+        # visible in logs instead of getting buried at debug level.
+        logger.warning(f"Typing indicator stopped for {chat_id}: {e}")

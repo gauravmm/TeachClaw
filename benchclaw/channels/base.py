@@ -63,6 +63,11 @@ class BaseChannel(AsyncContextManagerMixin):
         self.bus = bus
 
         self._task: Task | None = None  # Background task
+        # Per-chat typing-indicator dedupe: True iff our last published
+        # state for that chat was is_typing=True. Per-chat (not per-
+        # channel) so a typing event for chat B doesn't get suppressed
+        # because chat A is already mid-reply.
+        self._typing_active: dict[str, bool] = {}
         self._inbound_attention = InboundAttentionFilter(
             channel=self.name,
             policy=self.config.attention_policy,
@@ -98,12 +103,17 @@ class BaseChannel(AsyncContextManagerMixin):
         running = bool(self._task and not self._task.done())
         return (running, "running" if running else "stopped")
 
-    _typing_active: bool = False
-
     async def _handle_typing(self, event: TypingEvent) -> None:
-        """Deduplicate typing state changes and delegate to notify_typing."""
-        if event.is_typing != self._typing_active:
-            self._typing_active = event.is_typing
+        """Deduplicate per-chat typing state changes and delegate to notify_typing.
+
+        State is keyed by chat_id so a typing-true event for chat B isn't
+        suppressed while chat A is already typing — the prior per-channel
+        bool masked the indicator any time the same channel served more
+        than one chat at once (DM + group, two groups, etc.).
+        """
+        chat_id = event.address.chat_id
+        if event.is_typing != self._typing_active.get(chat_id, False):
+            self._typing_active[chat_id] = event.is_typing
             await self.notify_typing(event)
 
     async def notify_typing(self, event: TypingEvent) -> None:
