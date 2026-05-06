@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from benchclaw.agent.context import build_system_prompt
+from teachclaw.agent.context import build_system_prompt
 
 
 class _DummyTool:

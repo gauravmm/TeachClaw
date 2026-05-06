@@ -17,19 +17,19 @@ WORKDIR /app
 
 # Install Python dependencies first (cached layer)
 COPY pyproject.toml README.md LICENSE ./
-RUN mkdir -p benchclaw && touch benchclaw/__init__.py && \
+RUN mkdir -p teachclaw && touch teachclaw/__init__.py && \
     uv pip install --system --no-cache . && \
-    rm -rf benchclaw
+    rm -rf teachclaw
 
 # Copy the full source and install
-COPY benchclaw/ benchclaw/
+COPY teachclaw/ teachclaw/
 RUN uv pip install --system --no-cache .
 
 # Create config directory
-RUN mkdir -p /root/.benchclaw
+RUN mkdir -p /root/.teachclaw
 
 # Gateway default port
 EXPOSE 18790
 
-ENTRYPOINT ["benchclaw"]
+ENTRYPOINT ["teachclaw"]
 CMD ["status"]

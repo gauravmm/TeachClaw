@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import timedelta
 from pathlib import Path
 
-from benchclaw import auth as auth_module
-from benchclaw import storage as storage_layout
-from benchclaw.bus import MessageAddress
+from teachclaw import auth as auth_module
+from teachclaw import storage as storage_layout
+from teachclaw.bus import MessageAddress
 
 
 def _addr() -> MessageAddress:

@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from benchclaw.agent.tools.base import ToolContext
-from benchclaw.agent.tools.builtins import BUILTIN_TOOLS
-from benchclaw.agent.tools.filesystem import (
+from teachclaw.agent.tools.base import ToolContext
+from teachclaw.agent.tools.builtins import BUILTIN_TOOLS
+from teachclaw.agent.tools.filesystem import (
     EditFileTool,
     GlobTool,
     GrepTool,

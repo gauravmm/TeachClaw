@@ -4,14 +4,14 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from benchclaw.agent.tools.cron.tool import CronTool
-from benchclaw.agent.tools.cron.typesupport import (
+from teachclaw.agent.tools.cron.tool import CronTool
+from teachclaw.agent.tools.cron.typesupport import (
     CronJob,
     CronJobState,
     CronScheduleEvery,
     CronStore,
 )
-from benchclaw.bus import MessageAddress, MessageBus, SystemMessageEvent
+from teachclaw.bus import MessageAddress, MessageBus, SystemMessageEvent
 
 
 def _address() -> MessageAddress:

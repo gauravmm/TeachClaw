@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from benchclaw.bus import ToolCallTrace
-from benchclaw.citations import (
+from teachclaw.bus import ToolCallTrace
+from teachclaw.citations import (
     Citation,
     RenderFormat,
     extract_kb_records,

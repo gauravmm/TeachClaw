@@ -2,11 +2,11 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "benchclaw",
+      "name": "teachclaw",
       "type": "debugpy",
       "request": "launch",
-      "module": "benchclaw",
-      "args": ["--verbose", "--debug-dump", "debug_dump.txt"],
+      "module": "teachclaw",
+      "args": ["--verbose", "--debug-dump", "debug_dump"],
       "cwd": "${workspaceFolder}",
       "justMyCode": true
     }

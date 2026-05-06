@@ -9,7 +9,7 @@ demonstrates the surface before asking for the auth code.
 
 ## Current behavior
 
-In `benchclaw/channels/telegrm/commands.py` (`cmd_start`):
+In `teachclaw/channels/telegrm/commands.py` (`cmd_start`):
 
 ```
 Welcome to the AI-in-Business class assistant.
@@ -35,7 +35,7 @@ example questions actually do anything.
 2. **No demo of what the bot can do.** The bot renders Mermaid
    diagrams (see `_send_text_with_mermaid`) and surfaces source
    citations on a ❤ reaction (see `_reaction_sources` and the
-   `benchclaw/citations` package). Both are invisible from the welcome
+   `teachclaw/citations` package). Both are invisible from the welcome
    screen until the user happens to ask the right question.
 3. **Personalities are undiscoverable.** `/personality` exists in
    the command menu, but the welcome doesn't mention it; users who

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from benchclaw.citations.validation import (
+from teachclaw.citations.validation import (
     kb_records_from_events,
     unverified_postscript,
     validate_citations,
 )
-from benchclaw.session import AssistantEvent, ToolEvent, UserEvent
+from teachclaw.session import AssistantEvent, ToolEvent, UserEvent
 
 
 def _kb_events(*ids: str) -> list[ToolEvent]:

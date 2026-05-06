@@ -12,8 +12,8 @@ from typing import Any
 import pytest
 from mcp.types import TextContent
 
-from benchclaw.agent.tools import mcp_manager as mcp_module
-from benchclaw.agent.tools.mcp_manager import MCPManager, MCPServerConfig
+from teachclaw.agent.tools import mcp_manager as mcp_module
+from teachclaw.agent.tools.mcp_manager import MCPManager, MCPServerConfig
 
 
 class _FakeTool:

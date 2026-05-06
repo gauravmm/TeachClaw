@@ -2,10 +2,10 @@
 
 Today the entire citation system — parsing, dedup, kb-record extraction,
 TTL-tombstoned per-message store, and HTML rendering — lives inside
-`benchclaw/channels/telegrm.py`. Claude Code and SMTP-email
+`teachclaw/channels/telegrm.py`. Claude Code and SMTP-email
 channels see `<citation id="…">…</citation>` markup pass straight through
 to the user as raw text. This spec carves the channel-agnostic logic out
-into a `benchclaw/citations/` package so any channel can light up the
+into a `teachclaw/citations/` package so any channel can light up the
 same surface with a few lines of glue.
 
 ## Current behavior
@@ -63,7 +63,7 @@ Channel-specific concerns also tangled in:
 ## Proposed package
 
 ```
-benchclaw/citations/
+teachclaw/citations/
     __init__.py        public exports
     parsing.py         strip_citations, extract_kb_records, regexes
     store.py           CitationStore — keyed TTL + tombstone + hard cap
@@ -165,7 +165,7 @@ are multiple, dropdown to bare id when no kb_record matches.
 After the carve-out, Telegram becomes a thin user:
 
 ```python
-from benchclaw import citations as cit
+from teachclaw import citations as cit
 
 class TelegramChannel(BaseChannel):
     def __init__(self, ...):
@@ -212,7 +212,7 @@ For other channels, the wiring becomes:
 
 Two commits to keep the diff reviewable:
 
-1. **Carve-out, no behavior change.** Create `benchclaw/citations/`.
+1. **Carve-out, no behavior change.** Create `teachclaw/citations/`.
    Move `_strip_citations`, `_extract_kb_records`, `_MessageMapEntry`,
    the TTL/tombstone policy, and `_render_citation_list` (renamed). Add
    `RenderFormat` with `TELEGRAM_HTML` first, since that's the current

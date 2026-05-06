@@ -3,8 +3,8 @@
 ## Lecture deployment (in-class use, AI-in-business RAG)
 
 ### Logging removal — **DONE (awaiting test)**
-- [x] Remove the voluntary `LogTool` and `LogStore` (`benchclaw/agent/tools/memory.py` deleted).
-- [x] Drop the `("log", LogTool)` entry from `benchclaw/agent/tools/builtins.py` and `ctx.log_store` plumbing in `agent/tools/base.py` and `agent/loop.py`.
+- [x] Remove the voluntary `LogTool` and `LogStore` (`teachclaw/agent/tools/memory.py` deleted).
+- [x] Drop the `("log", LogTool)` entry from `teachclaw/agent/tools/builtins.py` and `ctx.log_store` plumbing in `agent/tools/base.py` and `agent/loop.py`.
 - [x] Strip log-related guidance from `workspace/AGENTS.md` and `workspace_default/AGENTS.md`. (`system_prompt.j2` had no log references.)
 - [x] Drop the `log.jsonl` summary path from session compaction (the old `Session.compact(log_store)` is replaced by a `compact_with_summary(summary)` method; the call site in `_maybe_compact_session` is stubbed pending the compaction rebuild). No `workspace/logs/` directory existed in this repo.
 
@@ -23,7 +23,7 @@ Canonical design in **`spec/COMPACTION.md`**.
 - [ ] Ensure the persisted summary is included in transcript dumps (Telegram observability work).
 
 ### Dummy-LLM harness (testing prerequisite) — **DONE (awaiting test)**
-- [x] `benchclaw/providers/scripted.py`: `ScriptedProvider` replays a YAML/JSON
+- [x] `teachclaw/providers/scripted.py`: `ScriptedProvider` replays a YAML/JSON
       fixture's `responses:` list in order; past the end the last response
       repeats. Each entry can carry `content`, `tool_calls`, `usage_total`,
       `finish_reason`, and `balloon` (in chars).
@@ -52,7 +52,7 @@ Replaces the `memory/` folder convention entirely. Memory is just files in the c
 - [x] Skills stay at `workspace/skills/`, read-only — addressable from inside the sandbox via the `skills/` prefix.
 - [x] `common/` is read-only by default. Addressable from inside the sandbox via the `common/` prefix.
 - [x] Each user gets `common/scratch/<chat_id>/` as a known-writable directory. **Spec deviation:** a per-user dir rather than a single `<user_id>.md` file — uniform dir-vs-file enforcement is simpler and the file convention can sit on top.
-- [x] Tool-level path enforcement in `benchclaw/agent/tools/filesystem.py:_resolve_path`. Sandbox mode (engaged when `ToolContext.storage_root` is set) rejects absolute paths and any post-resolve target outside `storage_root + read_roots` (or `+ write_roots` for writes). The `skills/` and `common/` path prefixes resolve under the workspace so the model doesn't have to count `..` segments.
+- [x] Tool-level path enforcement in `teachclaw/agent/tools/filesystem.py:_resolve_path`. Sandbox mode (engaged when `ToolContext.storage_root` is set) rejects absolute paths and any post-resolve target outside `storage_root + read_roots` (or `+ write_roots` for writes). The `skills/` and `common/` path prefixes resolve under the workspace so the model doesn't have to count `..` segments.
 - [x] Top-level storage listing injected as a synthetic tail turn (`<storage_listing>...</storage_listing>` user message) right before the latest user message in `AgentLoop._inject_storage_listing`. System-prompt prefix stays cache-stable. Listing format is deterministic (alpha sort, file sizes, dir item counts, no timestamps).
 - [x] Per-user profile at `storage/<channel>/<chat_id>/profile.md`; current contents injected into the system prompt under "What you know about this user" via a new `profile_text` template variable. Read fresh each turn; not persisted in the session.
 - [x] `storage/_admin/` is out of scope for all user-facing tools — the only way the model can address it would be via a literal "_admin" path under storage_root, which is outside the sandbox roots and rejected. The auth bot service will read it directly with hard-coded paths when that lands.
@@ -67,11 +67,11 @@ Replaces the `memory/` folder convention entirely. Memory is just files in the c
       Per-conversation storage instructions in their place.
 - [x] System prompt template gets a `personality_overlay` block; profile and
       personality are read fresh each turn in `AgentLoop._build_prompt_and_messages`.
-- [x] `benchclaw/personalities.py`: `default`, `skeptical_cfo`, `vc_partner`,
+- [x] `teachclaw/personalities.py`: `default`, `skeptical_cfo`, `vc_partner`,
       `mck_analyst`, `professor`. Selection persists at
       `storage/<channel>/<chat_id>/personality.txt`; `/clear` clears it.
 - [x] Mermaid encouraged in the new AGENTS.md with a worked example;
-      renderer lives at `benchclaw/rendering/mermaid.py` and the Telegram
+      renderer lives at `teachclaw/rendering/mermaid.py` and the Telegram
       channel post-processes blocks via `mmdc`.
 
 ### Telegram bot service & lecture surface — **DONE (awaiting test)**
@@ -91,7 +91,7 @@ Canonical design in **`spec/TELEGRAM.md`**.
       per-`message_id` map (24 h TTL); 🔥 dumps the tool-call trace.
       Citation tags are stripped from the displayed text in
       `_strip_citations` and stored alongside tool calls in the map.
-- [x] Mermaid post-processor: `benchclaw.rendering.mermaid` extracts
+- [x] Mermaid post-processor: `teachclaw.rendering.mermaid` extracts
       fenced `mermaid` blocks (max 2 per reply), shells out to `mmdc`,
       caches by `sha256(source+theme)`. The Telegram channel splits the
       reply at fence boundaries and posts photos in order; failures fall
@@ -116,7 +116,7 @@ Canonical design in **`spec/TELEGRAM.md`**.
       logger lines.
 
 ### Auth — **DONE (awaiting test)**
-- [x] `benchclaw/auth.py`: secret read/write at
+- [x] `teachclaw/auth.py`: secret read/write at
       `storage/_admin/secret.json`, marker read/write at
       `storage/<channel>/<user>/auth.json` (stores the **matched code**,
       not a version number — see `spec/AUTH.md`).
@@ -146,7 +146,7 @@ Canonical design in **`spec/TELEGRAM.md`**.
       explicit boundary to anchor on.
 
 ### Prompt-cache busting check — **DONE (awaiting test)**
-- [x] In-process monitor in `benchclaw/agent/cache_monitor.py`. Keyed
+- [x] In-process monitor in `teachclaw/agent/cache_monitor.py`. Keyed
       by `MessageAddress`, called from `AgentLoop._build_prompt_and_messages`
       after `_inject_tail`. Stores the last system message (raw, for
       diffs) and a tuple of message hashes for the stable prefix
@@ -185,7 +185,7 @@ wired.
    prompt will need a worked example so a small model emits the tag
    reliably. Today no `<citation>` tags appear in any reply.
 2. **Stripping (channel, wired).** `_strip_citations`
-   (`benchclaw/channels/telegrm.py`) runs on every outbound message.
+   (`teachclaw/channels/telegrm.py`) runs on every outbound message.
    Regex `<citation\s+id=\"([^\"]+)\">(.*?)</citation>` matches each
    tag. Returns `(cleaned_text, citations)` where the text has tags
    removed (only the inner claim survives for the user to read) and

@@ -141,7 +141,7 @@ model to emit correctly.
 
 ### Renderer module
 
-Implementation lives in `benchclaw/rendering/mermaid.py` as a
+Implementation lives in `teachclaw/rendering/mermaid.py` as a
 channel-agnostic pure function: `(mermaid_source, theme) → PNG bytes`
 or cached path. No Telegram knowledge in the renderer itself; the
 Telegram channel calls it and handles delivery. A future skill/tool
@@ -186,7 +186,7 @@ that bite during a live demo.
 
 ## Typing indicator
 
-Implemented in `benchclaw/channels/telegrm.py:_typing_loop`. The agent
+Implemented in `teachclaw/channels/telegrm.py:_typing_loop`. The agent
 emits `TypingEvent`s; the channel sends `send_chat_action` with the
 `typing` action every 4 seconds, capped at 8 invocations (~32s) per
 event so a hung agent cannot hammer Telegram.

@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from benchclaw.bus import MessageAddress
-from benchclaw.session import (
+from teachclaw.bus import MessageAddress
+from teachclaw.session import (
     MAX_SESSIONS,
     AssistantEvent,
     Session,

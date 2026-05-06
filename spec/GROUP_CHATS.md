@@ -1,11 +1,11 @@
 # Group chats — shared session, per-group derived auth
 
-Today benchclaw treats every Telegram chat as 1:1: every `chat_id` is
+Today teachclaw treats every Telegram chat as 1:1: every `chat_id` is
 assumed to belong to a single user, `auth.is_authenticated` is a
 per-`MessageAddress` boolean, the rate-limit window in
 `channels/telegrm/state.UserState` is keyed by `chat_id`, and the
 attention filter has a `summon_group` policy that is half-implemented
-(`benchclaw/channels/attention.py`) but not exercised end-to-end.
+(`teachclaw/channels/attention.py`) but not exercised end-to-end.
 
 This spec defines first-class group support for the Telegram channel.
 SMTP/email and Claude Code stay 1:1 and are out of scope.
@@ -160,7 +160,7 @@ discover it via the command menu).
 ## Attention and rate limiting
 
 The existing `summon_group` attention policy in
-`benchclaw/channels/attention.py` already does the right thing:
+`teachclaw/channels/attention.py` already does the right thing:
 queue group messages quietly; on `mention` or `reply` summon, replay
 the contiguous recent history before the summon as context. Set the
 Telegram channel's policy to `summon_group` when `is_group` is

@@ -5,20 +5,20 @@ from typing import Any
 
 import pytest
 
-from benchclaw.agent.loop import AgentLoop
-from benchclaw.agent.loop_state import AddressState, ToolCallTracker, TurnOutcome
-from benchclaw.agent.response import CITATION_MAX_RETRIES
-from benchclaw.agent.tools.base import ToolContext
-from benchclaw.bus import (
+from teachclaw.agent.loop import AgentLoop
+from teachclaw.agent.loop_state import AddressState, ToolCallTracker, TurnOutcome
+from teachclaw.agent.response import CITATION_MAX_RETRIES
+from teachclaw.agent.tools.base import ToolContext
+from teachclaw.bus import (
     InboundMessage,
     MessageAddress,
     MessageBus,
     OutboundMessage,
 )
-from benchclaw.config import Config
-from benchclaw.media import MediaRepository
-from benchclaw.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from benchclaw.session import (
+from teachclaw.config import Config
+from teachclaw.media import MediaRepository
+from teachclaw.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from teachclaw.session import (
     AssistantEvent,
     RenderOptions,
     Session,
@@ -405,8 +405,8 @@ async def test_apply_batch_skips_llm_after_terminal_tool(tmp_path: Path) -> None
     """When the prior assistant turn used only terminal_when_lone tools
     (e.g. send_media), the tool-result batch must NOT trigger another
     LLM call — the tool already delivered the user-visible reply."""
-    from benchclaw.bus import InboundMessageBatch, ToolResultEvent
-    from benchclaw.session import ToolEvent
+    from teachclaw.bus import InboundMessageBatch, ToolResultEvent
+    from teachclaw.session import ToolEvent
 
     loop = _make_loop(tmp_path, LLMResponse(content="should not be called"))
     addr = MessageAddress("telegram", "1")

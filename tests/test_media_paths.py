@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from benchclaw.bus import MessageAddress
-from benchclaw.media import MediaRepository
+from teachclaw.bus import MessageAddress
+from teachclaw.media import MediaRepository
 
 PNG_1X1 = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
@@ -201,7 +201,7 @@ def test_serial_rebuilt_after_reload(tmp_path: Path):
 def test_purge_old_only_removes_old_registered_media(tmp_path: Path):
     from datetime import timedelta as _td
 
-    from benchclaw.utils import now_aware
+    from teachclaw.utils import now_aware
 
     repo = MediaRepository(tmp_path, max_age_days=30)
     addr = _addr("telegram", "555")

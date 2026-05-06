@@ -4,9 +4,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from benchclaw.bus import InboundMessage, MessageAddress, MessageBus, OutboundMessage
-from benchclaw.channels.attention import AttentionPolicy, InboundAttentionFilter
-from benchclaw.channels.base import BaseChannel, ChannelConfig
+from teachclaw.bus import InboundMessage, MessageAddress, MessageBus, OutboundMessage
+from teachclaw.channels.attention import AttentionPolicy, InboundAttentionFilter
+from teachclaw.channels.base import BaseChannel, ChannelConfig
 
 
 def _ts(seconds: int) -> datetime:

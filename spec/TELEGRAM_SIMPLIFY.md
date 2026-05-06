@@ -1,6 +1,6 @@
 # Telegram channel simplification
 
-`benchclaw/channels/telegrm.py` is the largest channel by far. The
+`teachclaw/channels/telegrm.py` is the largest channel by far. The
 outbound-send pipeline in particular has grown three branches —
 plain text, text-with-mermaid, and media-with-caption — that each
 re-implement the same epilogue (record the citation map, emit the
@@ -10,7 +10,7 @@ new content types (audio, files with captions, mid-message system
 banners) light up without bespoke call sites.
 
 The previous citation carve-out (spec/CITATIONS.md) created
-`benchclaw/citations/` and moved parsing/rendering out of the
+`teachclaw/citations/` and moved parsing/rendering out of the
 channel. That helped, but it preserved a design choice that's worth
 reopening: the channel keeps a per-message `CitationStore` cache of
 parsed citations + tool calls + extracted kb_records, indexed by
@@ -86,7 +86,7 @@ turn isn't in the session, we genuinely have no record of it
 (restart with `drop_pending_updates`, or message from a deleted
 session).
 
-**Knock-on cleanup.** `benchclaw/citations/` shrinks to just
+**Knock-on cleanup.** `teachclaw/citations/` shrinks to just
 `parsing.py` + `render.py`; `store.py` and `CitationEntry`
 disappear. The Telegram channel stops constructing a
 `CitationStore` per chat. The "(react ❤ to any reply for sources)"
@@ -106,7 +106,7 @@ have.
 
 **Sequencing.** This finding subsumes the citation carve-out's
 `store.py` half but leaves `parsing.py` and `render.py` in place,
-so it's a net simplification of `benchclaw/citations/` rather than
+so it's a net simplification of `teachclaw/citations/` rather than
 a revert. Worth doing before finding 2 (the unified send pipeline)
 because it changes the shape of `_record_reply` — the dispatcher's
 epilogue becomes `for mid in sent_ids: turn_index[mid] = turn_id`,
@@ -449,7 +449,7 @@ banner.
 thin orchestrator that delegates to focused modules:
 
 ```
-benchclaw/channels/telegrm/
+teachclaw/channels/telegrm/
     __init__.py        re-export TelegramChannel + TelegramConfig
     channel.py         TelegramChannel class — lifecycle + handler wiring
     config.py          TelegramConfig (today's class)
@@ -500,10 +500,10 @@ findings 1, 2, 5, 6, 11, not as a pre-refactor that just moves code
 around. Sequencing matters (see below).
 
 **Cost & risk caveat.** External imports today are
-`from benchclaw.channels.telegrm import TelegramChannel,
+`from teachclaw.channels.telegrm import TelegramChannel,
 TelegramConfig` (e.g. tests/test_media_tools.py:13,
-benchclaw/channels/builtins.py:6). Re-exporting from
-`benchclaw/channels/telegrm/__init__.py` keeps those working,
+teachclaw/channels/builtins.py:6). Re-exporting from
+`teachclaw/channels/telegrm/__init__.py` keeps those working,
 which is the point of `__init__` — no caller needs to know we
 split the file.
 

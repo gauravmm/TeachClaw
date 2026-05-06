@@ -5,21 +5,21 @@ from typing import Any
 
 import pytest
 
-from benchclaw import personalities
-from benchclaw import storage as storage_layout
-from benchclaw.agent.loop import AgentLoop
-from benchclaw.agent.loop_state import AddressState, ToolCallTracker
-from benchclaw.agent.response import stringify_tool_result
-from benchclaw.bus import (
+from teachclaw import personalities
+from teachclaw import storage as storage_layout
+from teachclaw.agent.loop import AgentLoop
+from teachclaw.agent.loop_state import AddressState, ToolCallTracker
+from teachclaw.agent.response import stringify_tool_result
+from teachclaw.bus import (
     MessageAddress,
     MessageBus,
     SessionControlEvent,
     ToolCallTrace,
 )
-from benchclaw.config import Config
-from benchclaw.media import MediaRepository
-from benchclaw.providers.base import LLMProvider, LLMResponse
-from benchclaw.session import Session, UserEvent
+from teachclaw.config import Config
+from teachclaw.media import MediaRepository
+from teachclaw.providers.base import LLMProvider, LLMResponse
+from teachclaw.session import Session, UserEvent
 
 
 class _NoopProvider(LLMProvider):

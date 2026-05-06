@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-import benchclaw.agent.loop  # noqa: F401  — break a pre-existing circular import
-from benchclaw.providers.scripted import ScriptedProvider, ScriptedResponse
+import teachclaw.agent.loop  # noqa: F401  — break a pre-existing circular import
+from teachclaw.providers.scripted import ScriptedProvider, ScriptedResponse
 
 
 @pytest.mark.asyncio

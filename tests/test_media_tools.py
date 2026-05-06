@@ -7,11 +7,11 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from benchclaw.agent.tools.base import ToolContext
-from benchclaw.agent.tools.media import AnnotateMediaTool, ReadMediaTool, SendMediaTool
-from benchclaw.bus import MessageAddress, MessageBus, OutboundMessage
-from benchclaw.channels.telegrm import TelegramChannel, TelegramConfig
-from benchclaw.media import MediaRepository
+from teachclaw.agent.tools.base import ToolContext
+from teachclaw.agent.tools.media import AnnotateMediaTool, ReadMediaTool, SendMediaTool
+from teachclaw.bus import MessageAddress, MessageBus, OutboundMessage
+from teachclaw.channels.telegrm import TelegramChannel, TelegramConfig
+from teachclaw.media import MediaRepository
 
 PNG_1X1 = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
@@ -124,14 +124,14 @@ def test_unknown_alias_rejected(tmp_path: Path):
 
 
 def test_alias_collision_with_media_reserved():
-    from benchclaw.config import MediaConfig
+    from teachclaw.config import MediaConfig
 
     with pytest.raises(ValidationError):
         MediaConfig(shared_roots={"media": "/tmp"})
 
 
 def test_alias_with_slash_rejected():
-    from benchclaw.config import MediaConfig
+    from teachclaw.config import MediaConfig
 
     with pytest.raises(ValidationError):
         MediaConfig(shared_roots={"a/b": "/tmp"})
