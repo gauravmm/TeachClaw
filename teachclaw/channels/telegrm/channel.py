@@ -121,11 +121,8 @@ class TelegramChannel(BaseChannel):
     _cmd_help = commands.cmd_help
     _cmd_auth = commands.cmd_auth
     _cmd_personality = commands.cmd_personality
-    _cmd_cite = commands.cmd_cite
     _cmd_clear = commands.cmd_clear
     _cmd_forgetme = commands.cmd_forgetme
-    _cmd_sources = commands.cmd_sources
-    _cmd_scope = commands.cmd_scope
     _cmd_setsecret = commands.cmd_setsecret
     _cmd_whoauthed = commands.cmd_whoauthed
     _cmd_stats = commands.cmd_stats
@@ -157,11 +154,8 @@ class TelegramChannel(BaseChannel):
             "help": self._cmd_help,
             "auth": self._cmd_auth,
             "personality": self._cmd_personality,
-            "cite": self._cmd_cite,
             "clear": self._cmd_clear,
             "forgetme": self._cmd_forgetme,
-            "sources": self._cmd_sources,
-            "scope": self._cmd_scope,
             "setsecret": self._cmd_setsecret,
             "whoauthed": self._cmd_whoauthed,
             "stats": self._cmd_stats,

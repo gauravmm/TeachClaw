@@ -49,11 +49,8 @@ PUBLIC_COMMANDS: tuple[BotCommand, ...] = (
     BotCommand("help", "What I can do"),
     BotCommand("auth", "Authenticate with the code from the slide"),
     BotCommand("personality", "Switch reply persona"),
-    BotCommand("cite", "Toggle inline citations on/off"),
     BotCommand("clear", "Clear conversation history"),
     BotCommand("forgetme", "Delete your storage and re-auth"),
-    BotCommand("sources", "List available corpora (when wired)"),
-    BotCommand("scope", "Restrict retrieval (when wired)"),
 )
 
 ADMIN_COMMANDS: tuple[BotCommand, ...] = PUBLIC_COMMANDS + (

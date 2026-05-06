@@ -86,7 +86,6 @@ OutboundSegment = TextSegment | DiagramSegment | MediaSegment
 @dataclass
 class UserState:
     chat_id: int
-    cite: bool = True
     in_flight: bool = False
     seen_first_citation: bool = False
     last_user_message_id: int | None = None

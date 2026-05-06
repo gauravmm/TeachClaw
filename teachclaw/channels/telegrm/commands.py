@@ -224,9 +224,8 @@ async def cmd_help(
     text = (
         "I'm a small assistant for the AI-in-Business lecture.\n\n"
         "Send /start for example prompts you can tap to run.\n"
-        "Commands: /auth, /personality, /cite, /sources, /scope, "
-        "/clear (wipe this conversation), /forgetme (delete your data and "
-        "re-auth).\n"
+        "Commands: /auth, /personality, /clear (wipe this conversation), "
+        "/forgetme (delete your data and re-auth).\n"
         f"React {SOURCES_REACTION} to one of my replies to see the source "
         f"chunks; react {TRACE_REACTION} to see the tool-call trace for that "
         "reply."
@@ -428,20 +427,6 @@ async def _handle_dismiss_callback(query) -> None:
         logger.debug(f"delete_message failed: {e}")
 
 
-async def cmd_cite(
-    channel: "TelegramChannel", update: Update, _ctx: ContextTypes.DEFAULT_TYPE
-) -> None:
-    if not await gate(channel, update):
-        return
-    msg = update.effective_message
-    chat = update.effective_chat
-    if not (msg and chat):
-        return
-    st = channel.user_state(chat.id)
-    st.cite = not st.cite
-    await msg.reply_text(f"Inline citations: {'on' if st.cite else 'off'}.")
-
-
 async def cmd_clear(
     channel: "TelegramChannel", update: Update, _ctx: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -487,26 +472,6 @@ async def cmd_forgetme(
         await msg.reply_text(
             "Your storage has been deleted. Re-authenticate with /auth <code> to continue."
         )
-
-
-async def cmd_sources(
-    channel: "TelegramChannel", update: Update, _ctx: ContextTypes.DEFAULT_TYPE
-) -> None:
-    if not await gate(channel, update):
-        return
-    msg = update.effective_message
-    if msg:
-        await msg.reply_text("No corpus is wired up yet. Retrieval lands in a later iteration.")
-
-
-async def cmd_scope(
-    channel: "TelegramChannel", update: Update, _ctx: ContextTypes.DEFAULT_TYPE
-) -> None:
-    if not await gate(channel, update):
-        return
-    msg = update.effective_message
-    if msg:
-        await msg.reply_text("No corpus to scope yet. Retrieval lands in a later iteration.")
 
 
 # ---- admin commands --------------------------------------------------------
