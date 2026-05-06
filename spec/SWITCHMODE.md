@@ -1,113 +1,102 @@
-# Switchable lesson modes — pulling the "AI-in-Business" assumptions into a pack
+# Switchable lesson modes — the workspace *is* the lesson
 
 Today the assistant is hardwired around one course (AI in Business,
-Singapore) across at least four files. Swapping to a different lesson
-("Software Architecture", "Negotiation 101", "Intro to ML") means
-hand-editing each of those files and remembering not to commit
-half-changes. This spec extracts the lesson-specific surface into a
-single drop-in **lesson pack** and adds one config field that picks
-which pack is active.
+Singapore). Course-specific content lives in five places: welcome
+strings in `commands.py`, personalities in `teachclaw/data/`,
+`AGENTS.md` + `skills/` in `workspace/`, and the kb MCP server in
+`config/config.yaml`. Swapping lessons means hand-editing each.
+
+The fix is to stop treating "workspace" and "lesson" as separate
+concepts. A lesson is just a workspace. To switch, point the
+existing `agents.master.workspace` config field at a different
+directory. Everything course-specific moves into the workspace; the
+package ships zero course-flavoured defaults.
 
 ## Where the lesson currently leaks in
 
-A grep for "AI in Business", "Singapore", "lecture", "CFO" turns up
-five seams. Each is independent today:
+1. **Welcome + onboarding strings** —
+   `teachclaw/channels/telegrm/commands.py:47-101` (pre/post-auth
+   welcomes, group welcomes, example-prompt buttons) and
+   `:222-234` (help text). Hard-codes the course name and example
+   demos.
+2. **Personality overlays** — `teachclaw/data/personalities.yaml`,
+   loaded by `teachclaw/personalities.py:22` with an optional
+   `workspace/personalities.yaml` override.
+3. **System prompt** — `workspace/AGENTS.md` (and the seed at
+   `workspace_default/AGENTS.md`). Hard-codes the course frame and
+   citation protocol.
+4. **Skills** — `workspace/skills/` (and seed `workspace_default/
+   skills/`). Per-lesson but already in the right place.
+5. **MCP servers** — the `kb` server in `config/config.yaml`. Per-
+   lesson knowledge base, not per-deployment.
 
-1. **Welcome + onboarding strings** — `teachclaw/channels/telegrm/commands.py:47-101`
-   - `_PRE_AUTH_WELCOME` names the course ("AI-in-Business class
-     assistant") and the personas it pitches (Skeptical CFO …).
-   - `_GROUP_WELCOME_AUTHED` / `_GROUP_WELCOME_PRE_AUTH` repeat the
-     course name.
-   - `_POST_AUTH_WELCOME` describes three demos ("value chain", "2x2",
-     "build vs. buy") tightly bound to the course.
-   - `EXAMPLE_PROMPTS` + `_EXAMPLE_BUTTON_LABELS` — the tap-to-run
-     prompts STARTFLOW.md introduced.
-2. **Help text** — `teachclaw/channels/telegrm/commands.py:222-234`,
-   names the lecture.
-3. **Personality overlays** — `teachclaw/data/personalities.yaml`,
-   loaded by `teachclaw/personalities.py` with a workspace-root
-   override (`workspace/personalities.yaml`). The five personas
-   (CFO, VC, McKinsey, Professor, default) are business-flavoured.
-4. **System prompt / AGENTS.md** — `workspace/AGENTS.md` and
-   `workspace_default/AGENTS.md`. Hard-codes "AI-in-Business
-   lecture", "Singapore, lat 1.3667, lon 103.8", the kb-citation
-   protocol, the Mermaid-diagram bias.
-5. **Skills + KB binding** — `workspace/skills/` is per-lesson; the
-   `kb` MCP server in `config/config.yaml` points at a specific
-   knowledge-base service. Skills already vary per workspace; the kb
-   doesn't.
+(1) and (2) are the only ones that don't already live in the
+workspace; the rest are workspace-resident already, just lacking a
+convention that says "workspace == lesson".
 
-`personalities.py` is the only one with a built-in override hook
-(`workspace/personalities.yaml`). The other four are either source
-edits or workspace-file edits with no concept of swapping.
+## The shape
 
-## Proposed shape — a "lesson pack"
-
-A lesson pack is a directory that owns *every* lesson-specific
-artifact. One directory per lesson; switching lessons is one config
-change.
+A lesson is a directory laid out like a workspace. The repo ships
+one or more under `lessons/`; the operator points
+`agents.master.workspace` at the one they want active.
 
 ```
 lessons/
   ai_in_business/
-    meta.yaml           # name, label, description
-    onboarding.yaml     # welcome strings, example prompts, help text
-    personalities.yaml  # same shape as today's
-    AGENTS.md           # the system-prompt skill/style file
-    skills/             # workspace skills for this lesson
-    kb.yaml             # optional: MCP servers to merge in for this lesson
+    AGENTS.md            # system-prompt skill/style file (read by the agent each turn)
+    personalities.yaml   # persona overlays                    [content; replace]
+    onboarding.yaml      # welcome strings, prompts, help text [content; replace]
+    infra.yaml           # MCP servers, media shared_roots     [config overlay; keyed/dict-merge]
+    skills/              # readable by the agent (lives in read_roots)
+    common/              # readable by the agent
   software_architecture/
-    meta.yaml
-    onboarding.yaml
-    personalities.yaml
     AGENTS.md
+    personalities.yaml
+    onboarding.yaml
     skills/
 ```
 
-Everything outside `lessons/<name>/` stays lesson-neutral: the bus,
-agent loop, channel plumbing, auth, citations, command dispatch, the
-post-auth keyboard wiring, etc.
+The split is intentional. **Personalities and onboarding are content
+the lesson owns wholesale** — they have no global counterpart, so
+the lesson's file is loaded as-is. **Infra is a config overlay**
+that merges into the global `config.yaml` (MCP servers and
+shared_roots already exist there), so it needs explicit per-key
+merge policies.
 
-### `meta.yaml`
+At runtime the workspace also grows the existing runtime tree
+(`storage/`, `sessions/`, `media/`, `cron/`, `HEARTBEAT.md`); these
+are `.gitignore`d so a lesson directory commits cleanly without
+dragging per-user state with it.
 
-```yaml
-name: ai_in_business
-label: AI in Business
-description: MBA-grade class assistant for a lecture series on AI strategy.
+```
+config/config.yaml:
+  agents:
+    master:
+      workspace: ./lessons/ai_in_business
 ```
 
-`name` is the slug used by config; `label` is what shows in any UI;
-`description` is one line for an admin-facing `/lessons` listing if
-we ever add it.
+Switching: change the config line, restart. Two lessons running on
+the same machine = two processes pointing at two workspaces.
 
 ### `onboarding.yaml`
 
-Single source of truth for what STARTFLOW.md describes today. All
-strings that mention the course move here:
+The strings currently in `commands.py:47-101,224-234` move here:
 
 ```yaml
 pre_auth_welcome: |
   Welcome — I'm the AI-in-Business class assistant.
-
-  I can:
-  • Answer questions about the lecture material with citations …
-  • Draw diagrams when they help — value chains, 2x2s, flowcharts.
+  …
   • Adopt different personas ({persona_pitch}) — try /personality.
-
   To start, send /auth <code> using the code on the slide.
 
 group_welcome_pre_auth: |
-  I'm the AI-in-Business class assistant. …
+  …
 group_welcome_authed: |
-  I'm the AI-in-Business class assistant. …
+  …
 
 post_auth_welcome: |
   You're in. Three things to try (tap a button to run one):
-
-  • Value chain demo — …
-  • 2x2 framework demo — …
-  • Build-vs-buy as Skeptical CFO — …
-
+  …
   React {sources_reaction} to any reply to see the source citations;
   react {trace_reaction} to see which tools I called for that reply.
 
@@ -127,46 +116,46 @@ A few placeholders are filled at render time so we don't duplicate
 constants:
 
 - `{sources_reaction}` / `{trace_reaction}` — from
-  `teachclaw/channels/telegrm/state.py`. Avoids the lesson author
-  having to know the current emoji.
-- `{persona_pitch}` — the comma-joined `label`s of all
-  non-`default` personas in this pack's `personalities.yaml`. Today's
-  string ("Skeptical CFO, VC Partner, McKinsey Analyst, Professor")
-  is brittle; deriving it from `personalities.yaml` keeps the welcome
-  honest if a pack drops or adds a persona.
+  `teachclaw/channels/telegrm/state.py`. Lesson author doesn't need
+  to know the current emoji.
+- `{persona_pitch}` — comma-joined `label`s of all non-`default`
+  personas in this workspace's `personalities.yaml`. Keeps the
+  welcome honest if a lesson drops or adds a persona.
 
-`example_prompts` has at most ~4 entries (Telegram inline-keyboard
-rows are ugly past that). The Dismiss button is added by the channel
-code, not the pack.
+`example_prompts` caps at ~4 (Telegram inline-keyboard rows are
+ugly past that). The Dismiss button is added by channel code, not
+the lesson.
 
 ### `personalities.yaml`
 
-Identical shape to today's
-`teachclaw/data/personalities.yaml`. Move the file from
-`teachclaw/data/` into `lessons/ai_in_business/`. The packaged copy
-becomes the *bundled lesson*; lessons are not part of the Python
-package's `data/`.
+Same shape as today's
+`teachclaw/data/personalities.yaml`. Move into the workspace root
+and delete the packaged copy. `personalities.py:_PACKAGED` becomes
+`workspace / "personalities.yaml"`; the existing
+"workspace-override" branch collapses since the workspace file *is*
+the canonical one.
+
+If the file is missing the loader should fail loudly at startup —
+not silently fall back to a default that masks a misconfigured
+lesson.
 
 ### `AGENTS.md`
 
-Move `workspace_default/AGENTS.md` into the pack. The file the agent
-actually reads (`workspace/AGENTS.md`, mounted into the system prompt
-by `teachclaw/agent/context/builder.py:18,59-63`) becomes a *symlink
-or copy* placed by the lesson loader at startup, so the prompt
-template doesn't change.
+Already lives in `workspace/`. No move needed; today's
+`workspace_default/AGENTS.md` becomes `lessons/ai_in_business/AGENTS.md`
+and `workspace_default/` goes away.
 
-### `skills/`
+### `skills/`, `common/`
 
-Same idea: move `workspace_default/skills/` into the pack. On startup
-the loader copies (or symlinks) the lesson's skills into
-`workspace/skills/` so `SkillsLoader` finds them at the existing path.
+Same — already workspace-rooted; just move from `workspace_default/`
+into `lessons/<name>/`.
 
-### `mcp.yaml` (optional)
+### `infra.yaml` (optional)
 
-Most lessons want a different corpus, but the seam is more general
-than just the kb — it's any MCP server the lesson wants to add or
-override. Today every MCP server is hardwired in
-`config/config.yaml`. A lesson can ship a small file:
+Anything that's both lesson-specific *and* already exists as a key
+on the global `config.yaml` lives here. Today that's two things:
+MCP servers (the kb corpus) and `media.shared_roots` (alias-keyed
+paths to curated image collections used by `send_media`).
 
 ```yaml
 mcp_servers:
@@ -174,151 +163,250 @@ mcp_servers:
     transport: stdio
     command: sh
     args: [...]
+
+media:
+  shared_roots:
+    cuteness: /home/.../cute-db/cuteness
+    memes: /home/.../memes
 ```
 
-When loading config, lesson MCP servers are merged into the global
-list, with the lesson's entries overriding any global server of the
-same `name`. Lessons with no special corpus omit this file.
+The file is merged into the loaded `Config` at startup. Two merge
+policies cover both keys:
 
-## Config — one new field
+| key | policy | rationale |
+| --- | --- | --- |
+| `mcp_servers` | **keyed-merge by `name`** | lesson can override one global server (the kb), or add new ones, without losing unrelated globals |
+| `media.shared_roots` | **dict-merge** | lesson can override one alias's path, or add new aliases, without losing global ones |
 
-Add to `Config` (`teachclaw/config.py`):
+In both cases lesson entries win on collision. Lessons that need
+neither omit the file.
 
-```yaml
-lesson: ai_in_business
-lessons_dir: ./lessons   # optional, defaults to ./lessons
-```
+Adding a third overridable key in the future means picking one of
+these two policies and adding a row to the table — no new policy
+machinery. Anything else (scalar replacement, nested deep-merge) is
+explicitly out of scope; if a future need wants something different
+that's a sign the global config and the lesson have grown a real
+schema mismatch and deserve a more deliberate redesign.
 
-`lesson` selects the active pack by `meta.yaml:name`. If unset, the
-loader picks the only pack present, or errors if there are zero or
-more than one. That keeps a fresh checkout zero-configuration while
-still forcing an explicit choice once a second pack lands.
+Top-level keys not in the schema are rejected at load time so a
+typo (`mcp_server:` vs. `mcp_servers:`) fails loudly rather than
+silently dropping the kb override.
 
-The lesson is read once at startup; switching lessons requires a
-restart. We don't try to hot-swap mid-run — the kb MCP server, the
-system prompt, and per-user auth all assume a fixed pack for the
-process lifetime.
+## Securing lesson source from the agent
+
+Lesson source files (`AGENTS.md`, `personalities.yaml`,
+`onboarding.yaml`, `infra.yaml`) sit in the workspace root. Students
+must not be able to coax the agent into reading them — that exposes
+the prompt frame, the persona overlays, and any inline guidance
+intended only for the model.
+
+The good news: **the existing sandbox already blocks this.** In
+`teachclaw/agent/tools/filesystem.py:_resolve_path`:
+
+- The agent loop sets
+  `read_roots=(workspace/skills, workspace/common)`
+  (`agent/loop.py:268-270`). Workspace root itself is *not* in
+  `read_roots`.
+- Relative paths whose first segment isn't `skills/` or `common/`
+  resolve under `storage_root`, never the workspace root
+  (`filesystem.py:52-56`).
+- Absolute paths are rejected outright.
+- Path-escape attempts (`skills/../personalities.yaml`,
+  `../AGENTS.md`) are caught by the post-resolve `_is_within` check
+  against `(storage_root, *read_roots)` — `workspace/personalities.yaml`
+  is in none of those roots.
+
+So `AGENTS.md`, `personalities.yaml`, `onboarding.yaml`, and
+`infra.yaml` at the workspace root are unreachable to `read_file`,
+`grep`, and `glob` already.
+
+Two reinforcements worth adding:
+
+1. **A named deny-list on `ToolContext`.** Even though the root-
+   based fence already handles it, an explicit allow- and deny-
+   list signals intent and survives a future careless edit that
+   adds workspace root to `read_roots`. Concretely, add:
+
+   ```python
+   class ToolContext:
+       ...
+       forbidden_files: tuple[Path, ...] = ()  # always reject these targets
+   ```
+
+   Populate at agent-loop startup with the resolved paths of the
+   four lesson source files in `workspace_path`. `_resolve_path`
+   checks against `forbidden_files` before returning. Two lines of
+   defence.
+
+2. **A test.** A regression test that for each of the four lesson
+   source filenames, every plausible attack path
+   (`AGENTS.md`, `./AGENTS.md`, `skills/../AGENTS.md`,
+   `common/../AGENTS.md`, absolute path) raises `PermissionError`.
+   Cheap to write, catches future "I added a debug root" mistakes.
+
+What we **don't** need to fence: `skills/<*>/SKILL.md` files. Those
+are deliberately readable — they're how the lesson hands the model
+its tools-of-the-trade. Lesson authors must keep secrets out of
+`skills/` and `common/`; a one-line note in the lesson layout
+section above documents this.
+
+## Per-lesson storage isolation — automatic
+
+`storage_root = workspace/storage/<channel>/<chat_id>` already lives
+inside the workspace (`teachclaw/storage.py:24`). Pointing the
+workspace at a different lesson directory automatically gives each
+lesson its own `storage/` tree — separate auth markers, profiles,
+sessions, personalities. No per-lesson namespacing logic is needed
+because the workspace path is the namespace.
+
+The auth secret at `workspace/storage/_admin/secret.json` follows
+the same rule: each lesson has its own, rotated independently.
 
 ## Loading + integration
 
-A small new module — `teachclaw/lessons.py` — owns pack discovery
-and exposes the data the rest of the code needs. Sketch:
+A small new module — `teachclaw/lessons.py` — owns the loaders for
+the workspace-resident config files:
 
 ```python
 @dataclass(frozen=True)
-class LessonPack:
-    name: str
-    label: str
-    description: str
-    root: Path                       # lessons/<name>/
-    onboarding: Onboarding           # parsed onboarding.yaml
-    personalities_path: Path         # lessons/<name>/personalities.yaml
-    agents_md_path: Path             # lessons/<name>/AGENTS.md
-    skills_dir: Path                 # lessons/<name>/skills/
-    mcp_servers: list[MCPServerConfig]  # may be empty (from mcp.yaml)
+class Onboarding:
+    pre_auth_welcome: str
+    group_welcome_pre_auth: str
+    group_welcome_authed: str
+    post_auth_welcome: str
+    example_prompts: tuple[ExamplePrompt, ...]
+    help_text: str
 
-def load_lesson(lessons_dir: Path, name: str | None) -> LessonPack: ...
+def load_onboarding(workspace: Path) -> Onboarding: ...
+def load_infra_overlay(workspace: Path) -> InfraOverlay: ...   # mcp_servers + media.shared_roots
+def lesson_forbidden_files(workspace: Path) -> tuple[Path, ...]: ...
+
+def merge_infra_into_config(base: Config, overlay: InfraOverlay) -> Config:
+    """Apply infra.yaml on top of the loaded global config.
+
+    - mcp_servers: keyed-merge by `name` (overlay wins per name)
+    - media.shared_roots: dict-merge (overlay wins per alias)
+    """
 ```
 
 Wiring (small, mechanical):
 
-- **Onboarding strings** — `commands.py` imports `LessonPack.onboarding`
-  via the channel (channels already get the workspace; pass the lesson
-  the same way) and renders strings with the placeholder substitution
-  described above. The four constants
+- **Onboarding strings** — `commands.py` reads `Onboarding` from
+  the channel (channels already get the workspace; pass the
+  `Onboarding` along the same path) and renders the welcomes with
+  the placeholder substitution. The existing constants
   `_PRE_AUTH_WELCOME` / `_GROUP_WELCOME_*` / `_POST_AUTH_WELCOME` /
-  `EXAMPLE_PROMPTS` / `_EXAMPLE_BUTTON_LABELS` become attributes of
-  `LessonPack.onboarding`. `cmd_help` reads `onboarding.help_text`.
+  `EXAMPLE_PROMPTS` / `_EXAMPLE_BUTTON_LABELS` go away.
 - **Personalities** — `personalities.py:_PACKAGED` becomes
-  `lesson.personalities_path`. The workspace-override behaviour
-  (`workspace/personalities.yaml` overrides packaged) is preserved
-  for ad-hoc edits; if the lesson's bundled file is enough, the
-  override is just absent. `_load(workspace)` becomes
-  `_load(lesson, workspace)` and the `_CACHE` keys on the pair.
-- **AGENTS.md / skills** — at startup, the lesson loader stages the
-  pack's `AGENTS.md` + `skills/` into the active workspace
-  (`workspace/AGENTS.md`, `workspace/skills/<name>/`). `BOOTSTRAP_FILES`
-  in `agent/context/builder.py:18` keeps reading
-  `workspace/AGENTS.md` — no template change. Staging is idempotent;
-  if the user has hand-edited `workspace/AGENTS.md` we don't clobber
-  it (compare hashes, log a warning, leave the user's copy alone).
-- **MCP servers** — `Config.mcp_servers` is merged with
-  `lesson.mcp_servers` in `ConfigManager` after both have loaded;
-  lesson entries win on `name` collision.
+  `workspace / "personalities.yaml"`. The "packaged plus override"
+  fallback collapses to "load the workspace file or fail".
+- **AGENTS.md / skills** — no code change. They already live where
+  the agent reads them.
+- **Infra overlay** — `ConfigManager` calls
+  `merge_infra_into_config(config, load_infra_overlay(workspace))`
+  after the global config has loaded. Today this composes the kb
+  MCP server and the curated-media `shared_roots`; future overrides
+  with the same merge shape (keyed-merge by name, or alias-dict
+  merge) slot in via the table in the `infra.yaml` section.
+- **Forbidden files** — `AgentLoop.__init__` resolves
+  `lesson_forbidden_files(workspace_path)` once and threads it
+  into every `ToolContext` it builds.
 
-Nothing in the agent loop, bus, sessions, or auth needs to change. The
-lesson is a *configuration* concern, not a runtime one.
-
-## Per-lesson storage isolation
-
-Per-user storage today lives at `workspace/storage/<channel>/<chat_id>/`
-(see `teachclaw/storage.py` and the references in
-`teachclaw/personalities.py:81`). Switching lessons mid-deployment
-without isolation would let students from a previous course see
-profile/personality state from another. Two options, in increasing
-disruptiveness:
-
-1. **Storage namespaced by lesson** — `workspace/storage/<lesson>/
-   <channel>/<chat_id>/`. One-line change in `storage_root()`. Old
-   data needs a one-shot migration script (move
-   `workspace/storage/*` to `workspace/storage/ai_in_business/*`
-   before the first run on the new layout).
-2. **Auth marker scoped by lesson** — a user authed for lesson A
-   doesn't auto-pass when the operator switches to lesson B. The
-   auth secret already lives at `workspace/auth_secret.json`; either
-   namespace that file by lesson or rotate the code on every lesson
-   switch. The latter is simpler and forces a deliberate cut-over
-   (the prof writes the new code on the slide anyway).
-
-Recommendation: do (1). It's small, prevents cross-lesson leakage of
-profile/personality, and keeps `/forgetme` semantics clean. Skip (2)
-on the assumption that lesson swaps coincide with secret rotation.
+Nothing in the agent loop, bus, sessions, or auth changes shape.
 
 ## Migration — minimum viable cut
 
-Do this in one PR, not five:
+One PR:
 
-1. Create `lessons/ai_in_business/` and move existing files in:
-   - `teachclaw/data/personalities.yaml` →
-     `lessons/ai_in_business/personalities.yaml`
-   - `workspace_default/AGENTS.md` →
-     `lessons/ai_in_business/AGENTS.md`
-   - `workspace_default/skills/` →
-     `lessons/ai_in_business/skills/`
-   - Author `lessons/ai_in_business/onboarding.yaml` from the
-     constants currently in `commands.py:47-101,224-234`.
-   - Author `lessons/ai_in_business/meta.yaml`.
-2. Delete `workspace_default/` once the loader stages from the pack
-   instead.
-3. Add `teachclaw/lessons.py` (~150 LOC) and wire the four call sites
-   listed above.
-4. Add `lesson:` to `Config`, default-pick when there's one pack.
-5. Namespace storage by lesson, with a one-shot migrate for the
-   existing `workspace/storage/*` tree.
-6. Update `CLAUDE.md` "Package Layout" to mention `lessons/` and
-   the loader.
+1. Rename `workspace_default/` → `lessons/ai_in_business/`.
+2. Move `teachclaw/data/personalities.yaml` →
+   `lessons/ai_in_business/personalities.yaml`. Delete
+   `teachclaw/data/`.
+3. Author `lessons/ai_in_business/onboarding.yaml` from the
+   constants in `commands.py:47-101,224-234`.
+4. Add `teachclaw/lessons.py` (~120 LOC); wire the four call sites
+   above.
+5. Update `config/config.yaml` to set
+   `agents.master.workspace: ./lessons/ai_in_business`.
+6. Update `.gitignore` to ignore the runtime children
+   (`lessons/*/storage/`, `lessons/*/sessions/`,
+   `lessons/*/media/`, `lessons/*/cron/`,
+   `lessons/*/HEARTBEAT.md`) so a lesson directory commits clean.
+7. Add `forbidden_files` enforcement + the regression test.
+8. Update `CLAUDE.md` "Package Layout" to mention `lessons/` and
+   the workspace-is-the-lesson convention.
 
 After this, swapping lessons is: copy
-`lessons/ai_in_business/` → `lessons/<new_name>/`, edit the four
-files inside it, set `lesson: <new_name>` in `config.yaml`, restart.
+`lessons/ai_in_business/` → `lessons/<new_name>/`, edit the
+workspace files inside it (`AGENTS.md`, `personalities.yaml`,
+`onboarding.yaml`, optionally `infra.yaml`), set
+`workspace: ./lessons/<new_name>` in `config.yaml`, restart.
 
-## Open questions
+## Tradeoffs to keep in mind
 
-- **Multi-tenant in one process.** A single bot serving two lessons 
-  on different chat IDs would need per-address lesson selection
-  rather than process-wide. Out of scope for this spec — fixable
-  later by lifting `lesson` from `Config` to a per-channel or
-  per-address setting and letting `LessonPack` flow through
-  `ToolContext` and `PromptBuilder`. The pack abstraction proposed
-  here is the right primitive for that future.
-- **Where does `/lessons` (admin command listing packs) live?** Not
-  needed for v1; add when we have ≥3 packs and an operator gets
-  confused.
-- **Pack validation.** A malformed `onboarding.yaml` should fail
-  loudly at startup, not at first `/start`. The loader should
-  fully parse the pack on boot and refuse to come up if anything's
-  missing or unparsable — same posture as a bad `config.yaml`.
-- **Bundled vs. user packs.** Should `lessons/` ship inside the
-  Python package (importable resources), or stay a top-level
-  directory the operator authors next to `config/`? The latter is
-  simpler and matches how `workspace/` works today; recommended.
+- **Source and runtime state share a directory.** The workspace
+  contains both the lesson source (committed) and runtime data
+  (gitignored). It's the same trade Rails / Django / many web
+  frameworks make — code and `tmp/` next to each other. A clear
+  `.gitignore` is the only discipline needed.
+- **Hand-edits during class are mixed in with lesson source.** If
+  a TA tweaks `workspace/AGENTS.md` mid-session, the change sits
+  alongside lesson source. The operator decides whether to commit
+  or revert. The previous "lesson dir + workspace dir" proposal
+  surfaced this distinction in the directory layout; this one
+  surfaces it only via git status. Acceptable cost for the
+  conceptual saving.
+- **No bundled fallback for missing files.** A workspace without a
+  `personalities.yaml` or `onboarding.yaml` won't boot. That's
+  intentional — silent fallback masks a half-configured lesson.
+
+## Resolved
+
+- **One lesson per process.** No multi-tenancy. The active workspace
+  is process-wide. Two lessons on one machine = two processes with
+  two `config.yaml`s pointing at two `lessons/<name>/` directories.
+  Sessions, auth, kb, and storage all assume a fixed workspace for
+  the process lifetime; lifting that assumption is out of scope and
+  will not be designed for now.
+
+- **Pack validation is mandatory and complete at boot.**
+  `teachclaw/lessons.py` fully parses every lesson file before
+  `AgentLoop.run` is called and refuses to start the process if
+  anything is missing or malformed. Same posture as a bad
+  `config.yaml`. Specifically, on boot the loader:
+  1. Asserts the workspace directory exists and contains
+     `AGENTS.md`, `personalities.yaml`, `onboarding.yaml`, and
+     `skills/`. `infra.yaml` is optional; if present it must parse.
+  2. Parses `personalities.yaml` and verifies (a) each entry has
+     `name`, `label`, `description`, `overlay`, all non-empty
+     strings (overlay may be empty only for the `default` entry),
+     (b) `name` values are unique, (c) a `default` entry exists.
+  3. Parses `onboarding.yaml` and verifies all six required keys
+     are present and non-empty (`pre_auth_welcome`,
+     `group_welcome_pre_auth`, `group_welcome_authed`,
+     `post_auth_welcome`, `example_prompts`, `help_text`); checks
+     that every `{placeholder}` in the welcome strings is one of
+     the three the renderer knows (`{sources_reaction}`,
+     `{trace_reaction}`, `{persona_pitch}`); checks that
+     `example_prompts` is 1–4 entries each with non-empty `label`
+     and `prompt`.
+  4. Parses `infra.yaml` (if present) and rejects unknown
+     top-level keys. For `mcp_servers`, validates each entry has
+     a `name` and a transport-appropriate command set. For
+     `media.shared_roots`, validates the alias rules already
+     enforced by `Config.media.shared_roots` (`config.py:92-105`)
+     — non-empty alias, no slashes, not the reserved `media`
+     name, target path exists.
+  5. Resolves `forbidden_files` from the four lesson source
+     filenames in the workspace and threads the tuple into
+     `ToolContext`.
+
+  Failures raise a single aggregated `LessonValidationError` listing
+  every problem found, not just the first. Boot logs the error and
+  exits non-zero. The validator is exercised by tests that ship a
+  series of intentionally-broken workspace fixtures.
+
+- **Admin `/lessons` listing.** Dropped. Process-wide single-lesson
+  selection means there's nothing to list — the active lesson is
+  the workspace path in `config.yaml`. Bring it back if and when
+  multi-tenancy lands.

@@ -20,6 +20,11 @@ Three operations, in increasing intrusiveness:
    X. Reply when you've thought about it." Runs as if each student
    had typed the prompt: the agent answers it once, in each session.
 
+TODO: Add Snitch, where the agent answers about the student. Put it in the spec, to be implemented in the future.
+
+TODO: When we add /cohort, we drop /whoauthed. Also, /cohort should respond with a summary: Students active in 1/5/15min (or similar)
+
+
 The three sit on a spectrum: (1) is purely outbound, (2) is silent
 state-mutation that surfaces on the next reply, (3) actively spends
 LLM tokens for every authed user. The trigger surface is the same;
@@ -67,6 +72,11 @@ Sticking to slash commands keeps the trigger inside the channel that
 already does auth and command dispatch — no new transport, no extra
 auth story.
 
+TODO: Announce content should be available to the LLM, not bypass it. Drop --remember
+TODO: drop /ask, fold it into /inject --student (incompatible with --quiet)
+
+TODO: All announcements only ever go to students who have been active in the last 15 minutes (or whatever max time of cohort we have)
+
 ```
 /announce <text>                    — broadcast the text to all authed students
 /announce                           — (replied to a photo/document) broadcast that media
@@ -79,7 +89,7 @@ A long-message authoring problem is solved by reply-quoting: an
 admin can compose the announcement as a normal message in their DM,
 then reply to it with `/announce` (no body) to broadcast the quoted
 text. The body of the replied-to message is what gets sent. Same
-trick for `/inject` and `/ask`.
+trick for `/inject` and `/ask`. TODO: I love this! Elegantly solves a problem I didn't know how to.
 
 For media, the admin sends a photo or document with the caption
 `/announce`; the photo/document is broadcast with the caption text
@@ -196,10 +206,10 @@ out). Two ways to draw the line:
    the directive is queued but the loop skips the LLM call if the
    only batched event was a quiet system message. Requires a tiny
    addition to `SystemMessageEvent` (`quiet: bool = False`) and a
-   one-line guard in `_apply_inbound_batch`.
+   one-line guard in `_apply_inbound_batch`. TODO: Keep this, not always reply.
 2. **Always reply, but tell the model to be terse** — phrase
    injected directives as "Acknowledge this directive in one short
-   sentence: …". No code change. Less reliable.
+   sentence: …". No code change. Less reliable. 
 
 Recommendation: do (1). It's three lines and the discipline of an
 explicit flag is worth it; "I want this without surfacing it" is a
@@ -240,7 +250,7 @@ A few side-notes:
   /confirm within 30s." Implementation: stash the pending ask in
   `_users[admin_id]` state; require a follow-up `/confirm`. Skip
   for v1 if the teacher is the only admin — the slash command is
-  already deliberate.
+  already deliberate. TODO: No confirmation for now, for future consideration.
 - **Provenance.** Pass `metadata={"source": "instructor_ask"}` so
   the agent loop can prepend a marker to the user-message text in
   the session ("[instructor question] …"), which keeps the model
