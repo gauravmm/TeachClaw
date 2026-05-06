@@ -1,0 +1,22 @@
+repos:
+  - repo: local
+    hooks:
+      # Run `ruff check --fix` and re-stage any files it rewrote. The commit
+      # only aborts when ruff reports an issue it cannot auto-fix.
+      - id: ruff-check-restage
+        name: ruff check --fix (auto-restage)
+        entry: bash -c 'ruff check --fix "$@" && git add -- "$@"' --
+        language: python
+        additional_dependencies: [ruff==0.15.6]
+        types_or: [python, pyi]
+        require_serial: true
+      # Run `ruff format` and re-stage any files it rewrote. The commit only
+      # aborts when ruff itself fails (e.g. parse error). Pure reformatting
+      # no longer interrupts the commit.
+      - id: ruff-format-restage
+        name: ruff format (auto-restage)
+        entry: bash -c 'ruff format "$@" && git add -- "$@"' --
+        language: python
+        additional_dependencies: [ruff==0.15.6]
+        types_or: [python, pyi]
+        require_serial: true

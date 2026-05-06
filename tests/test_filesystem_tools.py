@@ -4,14 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from benchclaw.agent.tools.base import ToolContext
-from benchclaw.agent.tools.builtins import BUILTIN_TOOLS
-from benchclaw.agent.tools.filesystem import (
+from teachclaw.agent.tools.base import ToolContext
+from teachclaw.agent.tools.builtins import BUILTIN_TOOLS
+from teachclaw.agent.tools.filesystem import (
     EditFileTool,
     GlobTool,
     GrepTool,
     ReadFileTool,
     WriteFileTool,
+    _resolve_path,
 )
 
 
@@ -104,8 +105,8 @@ async def test_edit_existing_file_succeeds_after_read_and_refreshes_snapshot(
     result = await edit_tool.execute(
         ctx,
         path="notes.txt",
-        old_text="hello",
-        new_text="goodbye",
+        old_str="hello",
+        new_str="goodbye",
     )
 
     assert result == "Successfully edited notes.txt"
@@ -114,8 +115,71 @@ async def test_edit_existing_file_succeeds_after_read_and_refreshes_snapshot(
     second_result = await edit_tool.execute(
         ctx,
         path="notes.txt",
-        old_text="goodbye",
-        new_text="hello",
+        old_str="goodbye",
+        new_str="hello",
     )
 
     assert second_result == "Successfully edited notes.txt"
+
+
+def _sandboxed_ctx(tmp_path):
+    storage_root = tmp_path / "storage" / "telegram" / "1"
+    storage_root.mkdir(parents=True)
+    common = tmp_path / "common"
+    skills = tmp_path / "skills"
+    common.mkdir(parents=True)
+    skills.mkdir(parents=True)
+    return ToolContext(
+        workspace=tmp_path,
+        storage_root=storage_root,
+        read_roots=(skills.resolve(), common.resolve()),
+        write_roots=(),
+    )
+
+
+def test_sandbox_rejects_absolute_path(tmp_path):
+    ctx = _sandboxed_ctx(tmp_path)
+    with pytest.raises(PermissionError):
+        _resolve_path("/etc/passwd", ctx)
+
+
+def test_sandbox_rejects_traversal_outside_storage(tmp_path):
+    ctx = _sandboxed_ctx(tmp_path)
+    with pytest.raises(PermissionError):
+        _resolve_path("../../../etc/passwd", ctx)
+
+
+def test_sandbox_rejects_admin_dir_access(tmp_path):
+    ctx = _sandboxed_ctx(tmp_path)
+    with pytest.raises(PermissionError):
+        _resolve_path("../../_admin/secret.json", ctx)
+
+
+def test_sandbox_allows_storage_root_relative_path(tmp_path):
+    ctx = _sandboxed_ctx(tmp_path)
+    resolved = _resolve_path("notes.md", ctx)
+    assert resolved == (ctx.storage_root / "notes.md").resolve()
+
+
+def test_sandbox_allows_common_read_via_prefix(tmp_path):
+    ctx = _sandboxed_ctx(tmp_path)
+    resolved = _resolve_path("common/faq.md", ctx)
+    assert resolved == (tmp_path / "common" / "faq.md").resolve()
+
+
+def test_sandbox_allows_skills_read_via_prefix(tmp_path):
+    ctx = _sandboxed_ctx(tmp_path)
+    resolved = _resolve_path("skills/foo/SKILL.md", ctx)
+    assert resolved == (tmp_path / "skills" / "foo" / "SKILL.md").resolve()
+
+
+def test_sandbox_write_to_common_root_rejected(tmp_path):
+    ctx = _sandboxed_ctx(tmp_path)
+    with pytest.raises(PermissionError):
+        _resolve_path("common/faq.md", ctx, write=True)
+
+
+def test_sandbox_write_to_own_storage_root_allowed(tmp_path):
+    ctx = _sandboxed_ctx(tmp_path)
+    resolved = _resolve_path("notes.md", ctx, write=True)
+    assert resolved == (ctx.storage_root / "notes.md").resolve()

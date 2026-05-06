@@ -1,4 +1,0 @@
-interface:
-  display_name: "Codebase Simplification Review"
-  short_description: "Audit a codebase for simplification opportunities"
-  default_prompt: "Review this codebase and identify high-value simplification opportunities across implementation details, abstractions, APIs, and obsolete gadgets."

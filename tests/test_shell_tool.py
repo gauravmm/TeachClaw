@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from benchclaw.agent.tools.base import ToolContext
-from benchclaw.agent.tools.shell import ExecTool, ExecToolConfig
+from teachclaw.agent.tools.base import ToolContext
+from teachclaw.agent.tools.shell import ExecTool, ExecToolConfig
 
 
 @pytest.mark.asyncio

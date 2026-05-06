@@ -5,16 +5,24 @@ from typing import Any
 
 import pytest
 
-from benchclaw.agent.loop import AgentLoop, ToolCallTracker
-from benchclaw.agent.tools.base import ToolContext
-from benchclaw.bus import InboundMessage, MessageAddress, MessageBus, OutboundMessage
-from benchclaw.config import Config
-from benchclaw.media import MediaRepository
-from benchclaw.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from benchclaw.session import (
+from teachclaw.agent.loop import AgentLoop
+from teachclaw.agent.loop_state import AddressState, ToolCallTracker, TurnOutcome
+from teachclaw.agent.response import CITATION_MAX_RETRIES
+from teachclaw.agent.tools.base import ToolContext
+from teachclaw.bus import (
+    InboundMessage,
+    MessageAddress,
+    MessageBus,
+    OutboundMessage,
+)
+from teachclaw.config import Config
+from teachclaw.media import MediaRepository
+from teachclaw.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from teachclaw.session import (
     AssistantEvent,
     RenderOptions,
     Session,
+    SummaryEvent,
     SystemEvent,
     ToolEvent,
     UserEvent,
@@ -32,8 +40,33 @@ class _FakeProvider(LLMProvider):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        enable_thinking: bool | None = None,
     ) -> LLMResponse:
         return self._response
+
+
+class _ScriptedProvider(LLMProvider):
+    """Provider that returns scripted responses in order, recording each call."""
+
+    def __init__(self, responses: list[LLMResponse]) -> None:
+        self._responses = list(responses)
+        self.calls: list[dict[str, Any]] = []
+
+    async def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        enable_thinking: bool | None = None,
+    ) -> LLMResponse:
+        self.calls.append({"messages": messages, "tools": tools, "model": model})
+        return self._responses.pop(0)
 
 
 def _make_loop(tmp_path: Path, response: LLMResponse) -> AgentLoop:
@@ -57,9 +90,8 @@ async def test_process_llm_turn_sends_visible_response(tmp_path: Path) -> None:
 
     async with loop.tools:
         call_ctx = ToolContext(
-            workspace=loop.tools._master_ctx.workspace,
+            workspace=loop.workspace_path,
             bus=loop.bus,
-            log_store=loop.tools._master_ctx.log_store,
             media_repo=loop.media_repo,
             address=addr,
             background_tasks=tracker.tasks,
@@ -69,6 +101,7 @@ async def test_process_llm_turn_sends_visible_response(tmp_path: Path) -> None:
             tracker=tracker,
             call_ctx=call_ctx,
             addr=addr,
+            state=AddressState(),
         )
         outbound = await loop.bus.consume_outbound(channel="telegram")
 
@@ -86,7 +119,9 @@ async def test_process_llm_turn_records_tool_calls_as_events(tmp_path: Path) -> 
             content="Checking that now.",
             tool_calls=[
                 ToolCallRequest(
-                    id="tc1", name="log", arguments={"action": "append", "content": "step"}
+                    id="tc1",
+                    name="write_file",
+                    arguments={"path": "note.md", "content": "step"},
                 )
             ],
         ),
@@ -98,9 +133,8 @@ async def test_process_llm_turn_records_tool_calls_as_events(tmp_path: Path) -> 
 
     async with loop.tools:
         call_ctx = ToolContext(
-            workspace=loop.tools._master_ctx.workspace,
+            workspace=loop.workspace_path,
             bus=loop.bus,
-            log_store=loop.tools._master_ctx.log_store,
             media_repo=loop.media_repo,
             address=addr,
             background_tasks=tracker.tasks,
@@ -110,6 +144,7 @@ async def test_process_llm_turn_records_tool_calls_as_events(tmp_path: Path) -> 
             tracker=tracker,
             call_ctx=call_ctx,
             addr=addr,
+            state=AddressState(),
         )
         outbound = await loop.bus.consume_outbound(channel="telegram")
 
@@ -117,7 +152,7 @@ async def test_process_llm_turn_records_tool_calls_as_events(tmp_path: Path) -> 
     assert outbound.content == "Checking that now."
     assert isinstance(session.events[-1], AssistantEvent)
     assert session.events[-1].tool_calls is not None
-    assert session.events[-1].tool_calls[0]["function"]["name"] == "log"
+    assert session.events[-1].tool_calls[0]["function"]["name"] == "write_file"
     assert tracker.pending
 
 
@@ -142,7 +177,6 @@ def test_build_llm_messages_keeps_only_latest_reasoning(tmp_path: Path) -> None:
 
     messages = session.render_llm_messages(
         "system prompt",
-        MediaRepository(tmp_path),
         RenderOptions(),
     )
     assistant_messages = [message for message in messages if message["role"] == "assistant"]
@@ -166,7 +200,6 @@ def test_build_llm_messages_redacts_image_blocks_in_debug_profile(tmp_path: Path
 
     messages = session.render_llm_messages(
         "system prompt",
-        MediaRepository(tmp_path),
         RenderOptions(max_inline_image_url_chars=40),
     )
     tool_message = next(message for message in messages if message["role"] == "tool")
@@ -189,9 +222,7 @@ def test_render_llm_messages_keeps_full_image_blocks_for_provider(tmp_path: Path
         )
     )
 
-    messages = session.render_llm_messages(
-        "system prompt", MediaRepository(tmp_path), RenderOptions()
-    )
+    messages = session.render_llm_messages("system prompt", RenderOptions())
     tool_message = next(message for message in messages if message["role"] == "tool")
 
     assert tool_message["content"] == [
@@ -228,3 +259,258 @@ def test_collapse_user_messages_returns_one_user_event() -> None:
     assert isinstance(event, UserEvent)
     assert event.content == "[alice] first\n[bob] second"
     assert event.media == ["a.png", "b.png"]
+
+
+@pytest.mark.asyncio
+async def test_proactive_compaction_summarizes_when_estimate_exceeds_threshold(
+    tmp_path: Path,
+) -> None:
+    config = Config()
+    config.agents.master.workspace = str(tmp_path)
+    config.agents.master.context_window = 200
+    config.agents.master.max_tokens = 50
+    config.agents.master.compaction.threshold = 0.5
+
+    provider = _ScriptedProvider(
+        [
+            LLMResponse(content="SUMMARY OF PRIOR CHAT"),
+            LLMResponse(content="OK, here is the answer."),
+        ]
+    )
+    loop = AgentLoop(
+        config=config,
+        bus=MessageBus(),
+        provider=provider,
+        media_repo=MediaRepository(tmp_path),
+    )
+    addr = MessageAddress("telegram", "123")
+    session = Session(addr)
+    for i in range(6):
+        session.append(UserEvent(content=f"old user msg {i} " + "x" * 200))
+        session.append(AssistantEvent(content=f"old assistant reply {i} " + "y" * 200))
+    session.append(UserEvent(content="latest question"))
+    tracker = ToolCallTracker()
+
+    async with loop.tools:
+        call_ctx = ToolContext(
+            workspace=loop.workspace_path,
+            bus=loop.bus,
+            media_repo=loop.media_repo,
+            address=addr,
+            background_tasks=tracker.tasks,
+        )
+        await loop._process_llm_turn(
+            session=session,
+            tracker=tracker,
+            call_ctx=call_ctx,
+            addr=addr,
+            state=AddressState(),
+        )
+
+    assert len(provider.calls) == 2, "expected one summarize call + one main call"
+    summary_call = provider.calls[0]
+    main_call = provider.calls[1]
+    assert summary_call["tools"] is None, "summarizer must not see the agent toolset"
+    assert any(
+        isinstance(m.get("content"), str) and "summary" in m["content"].lower()
+        for m in summary_call["messages"]
+    ), "summarize prompt missing"
+    assert isinstance(session.events[0], SummaryEvent)
+    assert session.events[0].content == "SUMMARY OF PRIOR CHAT"
+    assert isinstance(session.events[1], UserEvent)
+    assert session.events[1].content == "latest question"
+    assert isinstance(session.events[-1], AssistantEvent)
+    assert session.events[-1].content == "OK, here is the answer."
+    main_messages = main_call["messages"]
+    assert main_messages[0]["role"] == "system"
+    assert any(
+        m["role"] == "user" and "latest question" in str(m.get("content", ""))
+        for m in main_messages
+    ), "latest user message must be visible verbatim to the main call"
+
+
+@pytest.mark.asyncio
+async def test_no_compaction_when_under_threshold(tmp_path: Path) -> None:
+    config = Config()
+    config.agents.master.workspace = str(tmp_path)
+    config.agents.master.context_window = 100000
+    config.agents.master.max_tokens = 4096
+
+    provider = _ScriptedProvider([LLMResponse(content="hello back")])
+    loop = AgentLoop(
+        config=config,
+        bus=MessageBus(),
+        provider=provider,
+        media_repo=MediaRepository(tmp_path),
+    )
+    addr = MessageAddress("telegram", "123")
+    session = Session(addr)
+    session.append(UserEvent(content="hi"))
+    tracker = ToolCallTracker()
+
+    async with loop.tools:
+        call_ctx = ToolContext(
+            workspace=loop.workspace_path,
+            bus=loop.bus,
+            media_repo=loop.media_repo,
+            address=addr,
+            background_tasks=tracker.tasks,
+        )
+        await loop._process_llm_turn(
+            session=session,
+            tracker=tracker,
+            call_ctx=call_ctx,
+            addr=addr,
+            state=AddressState(),
+        )
+
+    assert len(provider.calls) == 1, "no summarization expected when under threshold"
+    assert all(not isinstance(e, SummaryEvent) for e in session.events)
+
+
+def test_render_options_elide_replaces_old_retrieval_results() -> None:
+    addr = MessageAddress("telegram", "1")
+    session = Session(addr=addr)
+    session.append(UserEvent(content="first question"))
+    session.append(
+        ToolEvent(
+            tool_call_id="tc1",
+            tool_name="search",
+            content="big chunk body 1",
+        )
+    )
+    session.append(AssistantEvent(content="answered first"))
+    session.append(UserEvent(content="second question"))
+    session.append(
+        ToolEvent(
+            tool_call_id="tc2",
+            tool_name="search",
+            content="big chunk body 2",
+        )
+    )
+
+    rendered = session.render_llm_messages(
+        "system",
+        options=RenderOptions(elide_tool_names=("search",)),
+    )
+
+    tool_messages = [m for m in rendered if m["role"] == "tool"]
+    assert len(tool_messages) == 2
+    assert "elided" in tool_messages[0]["content"]
+    assert tool_messages[1]["content"] == "big chunk body 2"
+
+
+@pytest.mark.asyncio
+async def test_apply_batch_skips_llm_after_terminal_tool(tmp_path: Path) -> None:
+    """When the prior assistant turn used only terminal_when_lone tools
+    (e.g. send_media), the tool-result batch must NOT trigger another
+    LLM call — the tool already delivered the user-visible reply."""
+    from teachclaw.bus import InboundMessageBatch, ToolResultEvent
+    from teachclaw.session import ToolEvent
+
+    loop = _make_loop(tmp_path, LLMResponse(content="should not be called"))
+    addr = MessageAddress("telegram", "1")
+    session = Session(addr)
+    session.append(UserEvent(content="send the meme"))
+    session.append(
+        AssistantEvent(
+            content="",
+            tool_calls=[
+                {
+                    "id": "tc1",
+                    "type": "function",
+                    "function": {"name": "send_media", "arguments": "{}"},
+                }
+            ],
+        )
+    )
+    tracker = ToolCallTracker()
+    state = AddressState()
+    tracker._in_flight["tc1"] = "send_media"
+    batch_obj = InboundMessageBatch(
+        tool_results=[
+            ToolResultEvent(
+                tool_call_id="tc1",
+                tool_name="send_media",
+                result='{"status": "sent", "turn_complete": true, "path": "memes/x.jpg"}',
+            )
+        ]
+    )
+
+    async with loop.tools:
+        needs_llm = await loop._apply_batch(batch_obj, session, tracker, addr, state)
+
+    assert needs_llm is False
+    assert isinstance(session.events[-1], ToolEvent)
+    assert session.events[-1].tool_name == "send_media"
+
+
+@pytest.mark.asyncio
+async def test_invalid_citation_pushback_keeps_typing_indicator_on(tmp_path: Path) -> None:
+    """A pushback retry returns RETRY_QUEUED so the address loop skips its
+    top-of-loop typing=False publish, leaving the bubble on until the second
+    LLM call completes."""
+    bad_response = LLMResponse(content='Answer <citation id="ghost">claim</citation>.')
+    loop = _make_loop(tmp_path, bad_response)
+    addr = MessageAddress("telegram", "1")
+    session = Session(addr)
+    session.append(UserEvent(content="hi"))
+    tracker = ToolCallTracker()
+    state = AddressState()
+
+    async with loop.tools:
+        call_ctx = ToolContext(
+            workspace=loop.workspace_path,
+            bus=loop.bus,
+            media_repo=loop.media_repo,
+            address=addr,
+            background_tasks=tracker.tasks,
+        )
+        outcome = await loop.response.apply(bad_response, session, tracker, call_ctx, addr, state)
+
+    assert outcome is TurnOutcome.RETRY_QUEUED
+
+
+@pytest.mark.asyncio
+async def test_invalid_citation_triggers_retry_then_postscript(tmp_path: Path) -> None:
+    """Bad citation → one retry → second bad reply ships with postscript."""
+    bad_response = LLMResponse(content='Answer <citation id="ghost">claim</citation>.')
+    loop = _make_loop(tmp_path, bad_response)
+    addr = MessageAddress("telegram", "1")
+    session = Session(addr)
+    session.append(UserEvent(content="hi"))
+    # Seed a kb result in session history so the validator has something
+    # legitimate to compare "ghost" against.
+    session.append(
+        ToolEvent(
+            tool_call_id="tc1",
+            tool_name="kb__search",
+            content='{"id": "real"}',
+        )
+    )
+    tracker = ToolCallTracker()
+    state = AddressState()
+
+    async with loop.tools:
+        call_ctx = ToolContext(
+            workspace=loop.workspace_path,
+            bus=loop.bus,
+            media_repo=loop.media_repo,
+            address=addr,
+            background_tasks=tracker.tasks,
+        )
+        # First pass: bad citation → retry, no outbound, reminder injected.
+        await loop.response.apply(bad_response, session, tracker, call_ctx, addr, state)
+        assert state.citation_retries == 1
+        assert loop.bus.outbound.get("telegram") is None or loop.bus.outbound["telegram"].empty()
+        # Inbound queue should now hold the SystemMessageEvent reminder.
+        assert addr in loop.bus.inbound and not loop.bus.inbound[addr].empty()
+
+        # Second pass: still bad → publish anyway with postscript.
+        await loop.response.apply(bad_response, session, tracker, call_ctx, addr, state)
+        assert state.citation_retries == CITATION_MAX_RETRIES
+        outbound_q = loop.bus.outbound["telegram"]
+        published = outbound_q.get_nowait()
+        assert isinstance(published, OutboundMessage)
+        assert "not automatically verifiable" in published.content
+        assert "[1]" in published.content

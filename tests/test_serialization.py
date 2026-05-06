@@ -5,9 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from benchclaw.agent.tools.memory import LogStore
-from benchclaw.bus import MessageAddress
-from benchclaw.session import (
+from teachclaw.bus import MessageAddress
+from teachclaw.session import (
     MAX_SESSIONS,
     AssistantEvent,
     Session,
@@ -33,7 +32,7 @@ def test_message_address_from_string():
 
 
 def test_message_address_from_string_roundtrip():
-    addr = MessageAddress(channel="whatsapp", chat_id="456@s.whatsapp.net")
+    addr = MessageAddress(channel="email", chat_id="alice@example.com")
     assert MessageAddress.from_string(str(addr)) == addr
 
 
@@ -77,11 +76,11 @@ def test_session_save_load_roundtrip(tmp_path: Path):
     loaded = Session.load(path)
     assert loaded is not None
     assert loaded.addr == addr
-    assert len(loaded.messages) == 2
-    assert loaded.messages[0]["content"] == "hello"
-    assert loaded.messages[0]["media"] == ["workspace/media/telegram/99/20260308_101530/abc.jpg"]
-    assert loaded.messages[0]["media_metadata"][0]["media_type"] == "image"
-    assert loaded.messages[1]["metadata"]["tools_used"] == ["search"]
+    assert len(loaded.events) == 2
+    assert loaded.events[0].content == "hello"
+    assert loaded.events[0].media == ["workspace/media/telegram/99/20260308_101530/abc.jpg"]
+    assert loaded.events[0].media_metadata[0]["media_type"] == "image"
+    assert loaded.events[1].metadata["tools_used"] == ["search"]
 
 
 def test_session_load_missing_file(tmp_path: Path):
@@ -125,21 +124,21 @@ def test_session_clear(tmp_path: Path):
     session = Session(addr=addr)
     session.append(UserEvent(content="test"))
     session.clear()
-    assert session.messages == []
-    assert session.compacted_through == -1
+    assert session.events == []
+    assert not session.has_summary
 
 
-@pytest.mark.asyncio
-async def test_session_compact_uses_log_store(tmp_path: Path) -> None:
-    async with LogStore(tmp_path) as log_store:
-        log_store.append("recent log entry")
-        session = Session(addr=MessageAddress(channel="telegram", chat_id="1"))
+def test_session_compact_with_summary_replaces_history() -> None:
+    session = Session(addr=MessageAddress(channel="telegram", chat_id="1"))
+    session.append(UserEvent(content="hello"))
+    session.append(UserEvent(content="world"))
 
-        session.compact(log_store)
+    session.compact_with_summary("User said hello, then world.")
 
-    assert isinstance(session.events[-1], SummaryEvent)
-    assert "recent log entry" in session.events[-1].content
-    assert session.compacted_through == 0
+    assert len(session.events) == 1
+    assert isinstance(session.events[0], SummaryEvent)
+    assert session.events[0].content == "User said hello, then world."
+    assert session.has_summary
 
 
 def test_session_history_includes_sender_and_timestamp_prefix() -> None:
@@ -154,7 +153,7 @@ def test_session_history_includes_sender_and_timestamp_prefix() -> None:
         )
     )
 
-    rendered = session.get_history()[-1]
+    rendered = session.render_llm_messages("system")[-1]
     assert rendered["role"] == "user"
     assert rendered["content"].startswith("[Gaurav @")
     assert rendered["content"].endswith(": hello")
@@ -168,10 +167,10 @@ def test_session_history_includes_user_timestamp_prefix() -> None:
         UserEvent(content="ping", sender_id="7|alice", metadata={"sender_label": "alice"})
     )
 
-    history = session.get_history()
-    assert history[-1]["role"] == "user"
-    assert history[-1]["content"].startswith("[alice @")
-    assert history[-1]["content"].endswith(": ping")
+    rendered = session.render_llm_messages("system")
+    assert rendered[-1]["role"] == "user"
+    assert rendered[-1]["content"].startswith("[alice @")
+    assert rendered[-1]["content"].endswith(": ping")
 
 
 def test_session_describe_current_session_prefers_sender_label() -> None:
@@ -188,7 +187,7 @@ def test_session_describe_current_session_prefers_sender_label() -> None:
 
 
 def test_session_describe_current_session_handles_group_chats() -> None:
-    session = Session(addr=MessageAddress(channel="whatsapp", chat_id="group-1"))
+    session = Session(addr=MessageAddress(channel="telegram", chat_id="group-1"))
     session.append(
         UserEvent(
             content="hello",
@@ -197,7 +196,7 @@ def test_session_describe_current_session_handles_group_chats() -> None:
         )
     )
 
-    assert session.describe_current_session() == "WhatsApp group chat (recent sender: Alice)"
+    assert session.describe_current_session() == "Telegram group chat (recent sender: Alice)"
 
 
 # ---------------------------------------------------------------------------
@@ -225,8 +224,8 @@ async def test_session_manager_persists_on_exit(tmp_path: Path):
     # Re-enter and check the session was saved
     async with SessionManager(tmp_path) as sm2:
         s2 = sm2.get(addr)
-        assert len(s2.messages) == 1
-        assert s2.messages[0]["content"] == "persisted"
+        assert len(s2.events) == 1
+        assert s2.events[0].content == "persisted"
 
 
 @pytest.mark.asyncio
@@ -242,7 +241,7 @@ async def test_session_manager_save_midway(tmp_path: Path):
     assert path.exists()
     loaded = Session.load(path)
     assert loaded is not None
-    assert loaded.messages[0]["content"] == "mid"
+    assert loaded.events[0].content == "mid"
 
 
 @pytest.mark.asyncio

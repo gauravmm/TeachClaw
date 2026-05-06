@@ -1,55 +1,55 @@
 ---
 name: weather
-description: Get current weather and forecasts (no API key required).
-metadata: { "nanobot": { "emoji": "🌤️", "requires": { "bins": ["curl"] } } }
+description: Get current weather and short-range forecasts via free public APIs.
 ---
-
-// TODO: Check if requires/bins is supported.
 
 # Weather
 
-Two free services, no API keys needed.
+Two free APIs, no keys needed. Use `web_fetch`. Both return JSON; the
+tool already pretty-prints it for you.
 
 ## wttr.in (primary)
 
-Quick one-liner:
+Compact current-weather + 3-day forecast in JSON:
 
-```bash
-curl -s "wttr.in/London?format=3"
-# Output: London: ⛅️ +8°C
+- URL: `https://wttr.in/<location>?format=j1`
+- `<location>` is a city name (URL-encode spaces: `New+York`),
+  airport code (`JFK`), or `lat,lon`.
+
+Example call:
+
+```
+{"name": "web_fetch", "arguments": {"url": "https://wttr.in/Singapore?format=j1"}}
 ```
 
-Compact format:
+Useful keys in the response:
 
-```bash
-curl -s "wttr.in/London?format=%l:+%c+%t+%h+%w"
-# Output: London: ⛅️ +8°C 71% ↙5km/h
+- `current_condition[0]`: `temp_C`, `temp_F`, `humidity`, `windspeedKmph`,
+  `weatherDesc[0].value`, `FeelsLikeC`.
+- `weather[0..2]`: per-day forecast with `maxtempC`, `mintempC`,
+  `astronomy` (sunrise/sunset), and `hourly` slices.
+
+Default to `Singapore` when the user does not specify a location — that
+is where the lecture is held.
+
+## Open-Meteo (fallback)
+
+Use when wttr.in is slow or returns an error.
+
+- URL: `https://api.open-meteo.com/v1/forecast?latitude=<lat>&longitude=<lon>&current_weather=true`
+- For Singapore: `latitude=1.3667&longitude=103.8`.
+
+Example call:
+
+```
+{"name": "web_fetch", "arguments": {"url": "https://api.open-meteo.com/v1/forecast?latitude=1.3667&longitude=103.8&current_weather=true"}}
 ```
 
-Full forecast:
+Returns `current_weather` with `temperature`, `windspeed`, `winddirection`,
+`weathercode`. Weather-code lookup table:
+https://open-meteo.com/en/docs (Variable section).
 
-```bash
-curl -s "wttr.in/London?T"
-```
+## Reply style
 
-Format codes: `%c` condition · `%t` temp · `%h` humidity · `%w` wind · `%l` location · `%m` moon
-
-Tips:
-
-- URL-encode spaces: `wttr.in/New+York`
-- Airport codes: `wttr.in/JFK`
-- Units: `?m` (metric) `?u` (USCS)
-- Today only: `?1` · Current only: `?0`
-- PNG: `curl -s "wttr.in/Berlin.png" -o /tmp/weather.png`
-
-## Open-Meteo (fallback, JSON)
-
-Free, no key, good for programmatic use:
-
-```bash
-curl -s "https://api.open-meteo.com/v1/forecast?latitude=51.5&longitude=-0.12&current_weather=true"
-```
-
-Find coordinates for a city, then query. Returns JSON with temp, windspeed, weathercode.
-
-Docs: https://open-meteo.com/en/docs
+Provide the answer in one sentence with the relevant numbers and optionally an emoji.
+Convert to the unit the user used; default to °C and km/h. Do not paste the raw JSON.

@@ -11,9 +11,9 @@
     ".venv/": true,
     "bridge/node_modules": true,
     ".ruff_cache/": true,
-    "**/__pycache__": true
+    "**/__pycache__": true,
+    ".pytest_cache": true,
   },
-  "claudeCode.planView": "markdown",
   "python.testing.pytestArgs": ["tests"],
   "python.testing.unittestEnabled": false,
   "python.testing.pytestEnabled": true

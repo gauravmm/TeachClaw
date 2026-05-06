@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from benchclaw.agent.context.builder import ContextBuilder
+from teachclaw.agent.context import build_system_prompt
 
 
 class _DummyTool:
@@ -25,45 +25,36 @@ class _DummyTool:
         return self._parameters
 
 
-def test_build_system_prompt_uses_xml_safe_rendering(tmp_path: Path) -> None:
-    builder = ContextBuilder(tmp_path)
-    tool = _DummyTool(
-        name='quote"tool',
-        description='Say "hi" & compare <values>.',
-        parameters={
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": 'Path with "quotes" & symbols'},
-            },
-            "required": ["path"],
-        },
-    )
-
-    prompt = builder.build_system_prompt(
-        tools=[tool],
-        channel="whatsapp",
+def test_build_system_prompt_escapes_session_label(tmp_path: Path) -> None:
+    prompt = build_system_prompt(
+        tmp_path,
+        channel="telegram",
         chat_id="123&456",
         session_label='Alice "A" & Bob',
     )
 
-    assert '<tool name="quote&quot;tool">' in prompt
-    assert 'Say "hi" &amp; compare &lt;values&gt;.' in prompt
-    assert 'Path with "quotes" &amp; symbols' in prompt
-    assert "params=" not in prompt
     assert 'Session: Alice "A" &amp; Bob' in prompt
-    assert "TODO:" not in prompt
 
 
-def test_build_system_prompt_describes_media_annotation_flow(tmp_path: Path) -> None:
-    builder = ContextBuilder(tmp_path)
+def test_build_system_prompt_omits_tools_listing(tmp_path: Path) -> None:
+    """Tool definitions come through the chat template's tools=[...] field;
+    the system prompt must not also embed a textual listing (otherwise small
+    models double-count or drift from the canonical schema)."""
     tool = _DummyTool(
         name="annotate_media",
         description="Save image annotations.",
         parameters={"type": "object", "properties": {}, "required": []},
     )
 
-    prompt = builder.build_system_prompt(tools=[tool])
+    prompt = build_system_prompt(tmp_path, tools=[tool])
 
-    assert "<private_tags>" not in prompt
-    assert "annotate_media" in prompt
-    assert "MUST call `annotate_media`" in prompt
+    assert "<tools>" not in prompt
+    assert "annotate_media" not in prompt
+
+
+def test_build_system_prompt_omits_personality_overlay(tmp_path: Path) -> None:
+    """The persona lives in the synthetic tail message in AgentLoop, not
+    the system prompt, so persona switches don't bust the cacheable
+    system-prompt prefix."""
+    prompt = build_system_prompt(tmp_path)
+    assert "Persona for this conversation" not in prompt
