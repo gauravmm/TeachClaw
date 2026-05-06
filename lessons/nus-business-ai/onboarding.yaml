@@ -1,0 +1,46 @@
+pre_auth_welcome: |
+  Welcome — I'm the AI-in-Business class assistant.
+
+  I can:
+  • Answer questions about the lecture material with citations you can audit (react {sources_reaction} to any reply to see the sources).
+  • Draw diagrams when they help — value chains, 2x2s, flowcharts.
+  • Adopt different personas ({persona_pitch}) — try /personality.
+
+  To start, send /auth <code> using the code on the slide.
+
+group_welcome_pre_auth: |
+  I'm the AI-in-Business class assistant.
+
+  An admin must authenticate this room first: /auth <code> using the code on the slide. (At least one bot operator must be a Telegram admin in this group.)
+
+group_welcome_authed: |
+  I'm the AI-in-Business class assistant.
+
+  In this group:
+  • Mention me or reply to one of my messages to talk to me. I ignore everything else.
+  • React {sources_reaction} to any reply to see the source citations; react {trace_reaction} to see which tools I called for that reply.
+  • Admins can /personality, /clear, or /forgetme this room.
+
+post_auth_welcome: |
+  You're in. Three things to try (tap a button to run one):
+
+  • Value chain demo — walks the value chain of AI direct-to-consumer marketing end-to-end, draws the Mermaid diagram, and cites the lecture chunks it pulls from.
+  • 2x2 framework demo — renders a 2x2 of AI use cases for a regional bank as a Mermaid diagram, with citations on the classification calls.
+  • Build-vs-buy as Skeptical CFO — demonstrates the persona overlay on a recommendation-engine question. Try /personality to make a persona stick across the whole session.
+
+  React {sources_reaction} to any reply to see the source citations; react {trace_reaction} to see which tools I called for that reply.
+
+example_prompts:
+  - label: Value chain demo →
+    prompt: Can you explain the value chain of AI direct-to-consumer marketing?
+  - label: 2x2 framework demo →
+    prompt: Map AI use cases for a regional bank to a 2x2 of effort vs. impact.
+  - label: Build vs. buy (CFO) →
+    prompt: Compare build vs. buy for a recommendation engine, as a skeptical CFO.
+
+help_text: |
+  I'm a small assistant for the AI-in-Business lecture.
+
+  Send /start for example prompts you can tap to run.
+  Commands: /auth, /personality, /clear (wipe this conversation), /forgetme (delete your data and re-auth).
+  React {sources_reaction} to one of my replies to see the source chunks; react {trace_reaction} to see the tool-call trace for that reply.

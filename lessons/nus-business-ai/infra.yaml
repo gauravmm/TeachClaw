@@ -1,0 +1,12 @@
+mcp_servers:
+  - name: kb
+    transport: stdio
+    command: sh
+    args:
+      - "-c"
+      - "cd /home/gauravmm/benchclaw_orchestration/lecturebot-knowledgebase; uv run knowledge-mcp"
+
+media:
+  shared_roots:
+    cuteness: /home/gauravmm/benchclaw_orchestration/cute-db/cuteness
+    memes: /home/gauravmm/benchclaw_orchestration/lecturebot-knowledgebase/data/raw/memes

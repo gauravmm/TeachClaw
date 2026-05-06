@@ -39,72 +39,28 @@ if TYPE_CHECKING:
     from teachclaw.channels.telegrm.channel import TelegramChannel
 
 
-# ---- /start welcome strings + example keyboard -----------------------------
+# ---- /start welcome rendering ----------------------------------------------
 # See spec/STARTFLOW.md. Stage 1 (pre-auth) explains the surface and asks for
-# /auth; Stage 2 (post-auth) lists three demo prompts behind tap-to-run inline
-# buttons + a Dismiss row.
-
-_PRE_AUTH_WELCOME = (
-    "Welcome — I'm the AI-in-Business class assistant.\n\n"
-    "I can:\n"
-    "• Answer questions about the lecture material with citations you can "
-    f"audit (react {SOURCES_REACTION} to any reply to see the sources).\n"
-    "• Draw diagrams when they help — value chains, 2x2s, flowcharts.\n"
-    "• Adopt different personas (Skeptical CFO, VC Partner, McKinsey "
-    "Analyst, Professor) — try /personality.\n\n"
-    "To start, send /auth <code> using the code on the slide."
-)
-
-_GROUP_WELCOME_AUTHED = (
-    "I'm the AI-in-Business class assistant.\n\n"
-    "In this group:\n"
-    "• Mention me or reply to one of my messages to talk to me. I "
-    "ignore everything else.\n"
-    f"• React {SOURCES_REACTION} to any reply to see the source citations; "
-    f"react {TRACE_REACTION} to see which tools I called for that reply.\n"
-    "• Admins can /personality, /clear, or /forgetme this room."
-)
-
-_GROUP_WELCOME_PRE_AUTH = (
-    "I'm the AI-in-Business class assistant.\n\n"
-    "An admin must authenticate this room first: /auth <code> using the "
-    "code on the slide. (At least one bot operator must be a Telegram "
-    "admin in this group.)"
-)
-
-_POST_AUTH_WELCOME = (
-    "You're in. Three things to try (tap a button to run one):\n\n"
-    "• Value chain demo — walks the value chain of AI direct-to-consumer "
-    "marketing end-to-end, draws the Mermaid diagram, and cites the lecture "
-    "chunks it pulls from.\n"
-    "• 2x2 framework demo — renders a 2x2 of AI use cases for a regional "
-    "bank as a Mermaid diagram, with citations on the classification calls.\n"
-    "• Build-vs-buy as Skeptical CFO — demonstrates the persona overlay on "
-    "a recommendation-engine question. Try /personality to make a persona "
-    "stick across the whole session.\n\n"
-    f"React {SOURCES_REACTION} to any reply to see the source citations; "
-    f"react {TRACE_REACTION} to see which tools I called for that reply."
-)
-
-# Indexed by callback_data ``e:N``; tapping a button submits the matching
-# prompt as if the user had typed it.
-EXAMPLE_PROMPTS: tuple[str, ...] = (
-    "Can you explain the value chain of AI direct-to-consumer marketing?",
-    "Map AI use cases for a regional bank to a 2x2 of effort vs. impact.",
-    "Compare build vs. buy for a recommendation engine, as a skeptical CFO.",
-)
-
-_EXAMPLE_BUTTON_LABELS: tuple[str, ...] = (
-    "Value chain demo →",
-    "2x2 framework demo →",
-    "Build vs. buy (CFO) →",
-)
+# /auth; Stage 2 (post-auth) lists demo prompts (one per row) + a Dismiss
+# button. Strings come from the lesson's onboarding.yaml and pass through
+# placeholder substitution before being shown.
 
 
-def post_auth_keyboard() -> InlineKeyboardMarkup:
+def _render(channel: "TelegramChannel", template: str) -> str:
+    persona_pitch = ", ".join(
+        p.label for p in personalities.all_personalities(channel.workspace) if p.name != "default"
+    )
+    return template.format(
+        sources_reaction=SOURCES_REACTION,
+        trace_reaction=TRACE_REACTION,
+        persona_pitch=persona_pitch,
+    )
+
+
+def post_auth_keyboard(channel: "TelegramChannel") -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(label, callback_data=f"e:{i}")]
-        for i, label in enumerate(_EXAMPLE_BUTTON_LABELS)
+        [InlineKeyboardButton(p.label, callback_data=f"e:{i}")]
+        for i, p in enumerate(channel.onboarding.example_prompts)
     ]
     rows.append([InlineKeyboardButton("Dismiss", callback_data="d:")])
     return InlineKeyboardMarkup(rows)
@@ -202,15 +158,20 @@ async def cmd_start(
     # previous deployment get the current one.
     await refresh_command_menu(channel)
     authed = auth_module.is_authenticated(channel.workspace, channel.addr(chat.id))
+    onb = channel.onboarding
     if is_group_chat(update):
         # Reduced welcome: no example keyboard (would spam everyone),
         # no persona pitch (admins find it via the menu).
-        await msg.reply_text(_GROUP_WELCOME_AUTHED if authed else _GROUP_WELCOME_PRE_AUTH)
+        template = onb.group_welcome_authed if authed else onb.group_welcome_pre_auth
+        await msg.reply_text(_render(channel, template))
         return
     if authed:
-        await msg.reply_text(_POST_AUTH_WELCOME, reply_markup=post_auth_keyboard())
+        await msg.reply_text(
+            _render(channel, onb.post_auth_welcome),
+            reply_markup=post_auth_keyboard(channel),
+        )
     else:
-        await msg.reply_text(_PRE_AUTH_WELCOME)
+        await msg.reply_text(_render(channel, onb.pre_auth_welcome))
 
 
 async def cmd_help(
@@ -221,16 +182,7 @@ async def cmd_help(
     msg = update.effective_message
     if not msg:
         return
-    text = (
-        "I'm a small assistant for the AI-in-Business lecture.\n\n"
-        "Send /start for example prompts you can tap to run.\n"
-        "Commands: /auth, /personality, /clear (wipe this conversation), "
-        "/forgetme (delete your data and re-auth).\n"
-        f"React {SOURCES_REACTION} to one of my replies to see the source "
-        f"chunks; react {TRACE_REACTION} to see the tool-call trace for that "
-        "reply."
-    )
-    await msg.reply_text(text)
+    await msg.reply_text(_render(channel, channel.onboarding.help_text))
 
 
 async def cmd_auth(
@@ -276,10 +228,14 @@ async def cmd_auth(
     auth_module.write_marker(channel.workspace, addr, secret.code)
     channel._auth_limiter.record_success(user_key)
     if in_group:
-        await msg.reply_text("✅ group authenticated.\n\n" + _GROUP_WELCOME_AUTHED)
+        await msg.reply_text(
+            "✅ group authenticated.\n\n"
+            + _render(channel, channel.onboarding.group_welcome_authed)
+        )
     else:
         await msg.reply_text(
-            "Authenticated.\n\n" + _POST_AUTH_WELCOME, reply_markup=post_auth_keyboard()
+            "Authenticated.\n\n" + _render(channel, channel.onboarding.post_auth_welcome),
+            reply_markup=post_auth_keyboard(channel),
         )
 
 
@@ -395,7 +351,8 @@ async def _handle_example_callback(channel: "TelegramChannel", query, chat, idx_
         idx = int(idx_str)
     except ValueError:
         return
-    if not 0 <= idx < len(EXAMPLE_PROMPTS):
+    examples = channel.onboarding.example_prompts
+    if not 0 <= idx < len(examples):
         return
     try:
         await query.edit_message_reply_markup(reply_markup=None)
@@ -409,7 +366,7 @@ async def _handle_example_callback(channel: "TelegramChannel", query, chat, idx_
     await channel._handle_message(
         sender_id=sender_id,
         chat_id=str(chat.id),
-        content=EXAMPLE_PROMPTS[idx],
+        content=examples[idx].prompt,
         metadata={
             "user_id": user.id,
             "username": user.username,

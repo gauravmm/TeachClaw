@@ -1,0 +1,7 @@
+mcp_servers:
+  - name: kb
+    transport: stdio
+    command: sh
+    args:
+      - "-c"
+      - "cd /home/gauravmm/benchclaw_orchestration/lecturebot-knowledgebase-ai; uv run knowledge-mcp"

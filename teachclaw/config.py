@@ -164,14 +164,23 @@ class ConfigManager:
                 with open(self._path) as f:
                     data = yaml.safe_load(f) or {}
                 self.config = Config.model_validate(data)
-                return self.config
             except (yaml.YAMLError, ValueError) as e:
                 logger.warning(f"Failed to load config from {self._path}: {e}")
                 logger.warning("Using default configuration.")
+                self.config = Config()
         else:
             self._write_on_exit = True
+            self.config = Config()
 
-        self.config = Config()
+        # Validate the lesson-pack workspace and apply its infra overlay on
+        # top of the global config. Done here so a misconfigured workspace
+        # blocks startup with a clear error rather than failing later in
+        # the agent loop. See spec/SWITCHMODE.md.
+        from teachclaw import lessons
+
+        lessons.validate_workspace(self.config.workspace_path)
+        overlay = lessons.load_infra_overlay(self.config.workspace_path)
+        lessons.merge_infra_into_config(self.config, overlay)
         return self.config
 
     def __exit__(self, *_) -> None:

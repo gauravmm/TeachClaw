@@ -46,6 +46,14 @@ class ToolContext:
     read_roots: tuple[Path, ...] = ()
     write_roots: tuple[Path, ...] = ()
 
+    # Defence-in-depth deny-list. Filesystem tools refuse any access to
+    # these resolved paths regardless of how the model spelled the request.
+    # Populated from teachclaw.lessons.lesson_forbidden_files() so lesson
+    # source files (AGENTS.md, personalities.yaml, onboarding.yaml,
+    # infra.yaml) are unreachable even if a future change opens up
+    # workspace root in read_roots.
+    forbidden_files: tuple[Path, ...] = ()
+
 
 class ToolConfig(BaseModel):
     """Base config shared by every tool. Subclass to add tool-specific fields."""

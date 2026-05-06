@@ -6,6 +6,15 @@ workspace/
 bridge/node_modules
 debug_dump
 
+# Lesson-pack runtime state (the workspace IS the lesson; see
+# spec/SWITCHMODE.md). Lesson source under lessons/<name>/ commits;
+# per-conversation runtime files do not.
+lessons/*/storage/
+lessons/*/sessions/
+lessons/*/media/
+lessons/*/cron/
+lessons/*/HEARTBEAT.md
+
 .assets
 .env
 *.pyc

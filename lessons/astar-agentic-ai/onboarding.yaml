@@ -1,0 +1,46 @@
+pre_auth_welcome: |
+  Welcome — I'm the workshop assistant for the NTU BMES Agentic AI hackathon.
+
+  I can:
+  • Answer questions about the workshop material with citations you can audit (react {sources_reaction} to any reply to see the sources).
+  • Draw the agent loop, sequence diagrams between agents, or pattern-comparison sketches when they help.
+  • Adopt different personas ({persona_pitch}) — try /personality.
+
+  To start, send /auth <code> using the code on the slide.
+
+group_welcome_pre_auth: |
+  I'm the workshop assistant for the NTU BMES Agentic AI hackathon.
+
+  An admin must authenticate this room first: /auth <code> using the code on the slide. (At least one bot operator must be a Telegram admin in this group.)
+
+group_welcome_authed: |
+  I'm the workshop assistant for the NTU BMES Agentic AI hackathon.
+
+  In this room:
+  • Mention me or reply to one of my messages to talk to me. I ignore everything else.
+  • React {sources_reaction} to any reply to see the source citations; react {trace_reaction} to see which tools I called for that reply.
+  • Admins can /personality, /clear, or /forgetme this room.
+
+post_auth_welcome: |
+  You're in. Three things to try (tap a button to run one):
+
+  • Agent loop demo — walks input → tool use → observation → output, draws the loop as a Mermaid diagram, and cites the slides it pulls from.
+  • Patterns demo — compares actor-critic, vibe coding, and the complexity ladder; renders a side-by-side sketch with citations on the workshop's framing of each.
+  • Triage handoff demo — sketches a sequence diagram for the Task-2 triage→reporter agent handoff, with the safety and liveness questions you have to answer to ship it. Try /personality to flip into Safety Engineer for follow-ups.
+
+  React {sources_reaction} to any reply to see the source citations; react {trace_reaction} to see which tools I called for that reply.
+
+example_prompts:
+  - label: Agent loop demo →
+    prompt: Walk me through the agent loop — input, tool use, observation, output — with a Mermaid diagram.
+  - label: Patterns demo →
+    prompt: Compare actor-critic, vibe coding, and the complexity ladder. When do I reach for each?
+  - label: Triage handoff demo →
+    prompt: Sketch the handoff between the triage agent and the reporter agent in Task 2. What safety and liveness properties does the design need?
+
+help_text: |
+  I'm a small assistant for the NTU BMES Agentic AI hackathon.
+
+  Send /start for example prompts you can tap to run.
+  Commands: /auth, /personality, /clear (wipe this conversation), /forgetme (delete your data and re-auth).
+  React {sources_reaction} to one of my replies to see the source chunks; react {trace_reaction} to see the tool-call trace for that reply.

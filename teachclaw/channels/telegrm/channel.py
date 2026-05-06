@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from loguru import logger
 from telegram.ext import (
@@ -32,6 +33,9 @@ from teachclaw.channels.telegrm import commands, inbound, outbound, reactions, t
 from teachclaw.channels.telegrm.config import TelegramConfig
 from teachclaw.channels.telegrm.state import UserState
 from teachclaw.media import MediaRepository
+
+if TYPE_CHECKING:
+    from teachclaw.lessons import Onboarding
 
 
 class TelegramChannel(BaseChannel):
@@ -75,6 +79,7 @@ class TelegramChannel(BaseChannel):
         self._bot_user_id: int | None = None
         self._users: dict[str, UserState] = {}
         self._auth_limiter = auth_module.AuthRateLimiter()
+        self._onboarding: "Onboarding | None" = None
 
     # ---- shared accessors used by sibling modules ------------------------
 
@@ -99,6 +104,14 @@ class TelegramChannel(BaseChannel):
 
     def is_admin(self, user_id: int) -> bool:
         return user_id in (self.config.admin_user_ids or [])
+
+    @property
+    def onboarding(self) -> "Onboarding":
+        if self._onboarding is None:
+            from teachclaw import lessons
+
+            self._onboarding = lessons.load_onboarding(self.workspace)
+        return self._onboarding
 
     def status(self) -> tuple[bool, str]:
         if self._app:

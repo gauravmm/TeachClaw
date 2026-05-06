@@ -1,8 +1,10 @@
-"""Lecture personalities — system-prompt overlays only; tools/retrieval unchanged.
+"""Lesson personalities — system-prompt overlays only; tools/retrieval unchanged.
 
-Definitions ship in ``teachclaw/data/personalities.yaml`` and can be
-overridden by placing a ``personalities.yaml`` of the same shape in the
-workspace root. The chosen name for each user persists at
+Definitions live at ``<workspace>/personalities.yaml`` (the workspace
+*is* the lesson — see spec/SWITCHMODE.md). Schema and presence are
+validated at boot by :mod:`teachclaw.lessons`; this module just loads.
+
+The chosen name for each user persists at
 ``storage/<channel>/<chat_id>/personality.txt`` so it survives bot
 restart but is wiped by /clear and /forgetme along with the rest of
 the user's sandbox.
@@ -14,12 +16,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
-from loguru import logger
 
 from teachclaw import storage as storage_layout
 from teachclaw.bus import MessageAddress
-
-_PACKAGED = Path(__file__).parent / "data" / "personalities.yaml"
 
 
 @dataclass(frozen=True)
@@ -33,25 +32,21 @@ class Personality:
 _CACHE: dict[Path, dict[str, Personality]] = {}
 
 
+_FALLBACK_DEFAULT = Personality("default", "Default", "Neutral assistant.", "")
+
+
 def _parse(path: Path) -> list[Personality]:
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError) as e:
-        logger.warning(f"Failed to load personalities from {path}: {e}")
-        return []
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     out: list[Personality] = []
     for raw in data.get("personalities") or []:
-        try:
-            out.append(
-                Personality(
-                    name=str(raw["name"]),
-                    label=str(raw.get("label", raw["name"])),
-                    description=str(raw.get("description", "")),
-                    overlay=str(raw.get("overlay", "")).rstrip(),
-                )
+        out.append(
+            Personality(
+                name=str(raw["name"]),
+                label=str(raw.get("label", raw["name"])),
+                description=str(raw.get("description", "")),
+                overlay=str(raw.get("overlay", "")).rstrip(),
             )
-        except (KeyError, TypeError) as e:
-            logger.warning(f"Skipping malformed personality in {path}: {e}")
+        )
     return out
 
 
@@ -59,15 +54,12 @@ def _load(workspace: Path) -> dict[str, Personality]:
     cached = _CACHE.get(workspace)
     if cached is not None:
         return cached
-
-    items = _parse(_PACKAGED)
-    override = workspace / "personalities.yaml"
-    if override.exists():
-        items = _parse(override) or items
-
-    if not any(p.name == "default" for p in items):
-        items.insert(0, Personality("default", "Default", "Neutral, direct class assistant.", ""))
-
+    path = workspace / "personalities.yaml"
+    # Boot-time validate_workspace() guarantees this file exists in
+    # production. Tests sometimes spin up a bare workspace, so tolerate
+    # absence by falling back to a single 'default' persona rather than
+    # crashing per-turn.
+    items = _parse(path) if path.exists() else [_FALLBACK_DEFAULT]
     by_name = {p.name: p for p in items}
     _CACHE[workspace] = by_name
     return by_name

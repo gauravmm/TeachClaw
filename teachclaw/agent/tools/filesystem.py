@@ -55,6 +55,8 @@ def _resolve_path(path: str, ctx: ToolContext, *, write: bool = False) -> Path:
         else:
             base = ctx.storage_root
         resolved = (base / path).expanduser().resolve()
+        if resolved in ctx.forbidden_files:
+            raise PermissionError(f"Path '{path}' is not readable.")
         sandbox_roots: tuple[Path, ...] = (ctx.storage_root.resolve(),)
         extra = ctx.write_roots if write else ctx.read_roots
         sandbox_roots = sandbox_roots + tuple(r.resolve() for r in extra)

@@ -34,7 +34,36 @@ class _NoopProvider(LLMProvider):
         return LLMResponse(content="ok")
 
 
+def _seed_personalities(tmp_path: Path) -> None:
+    """Write a minimal personalities.yaml so write_personality can find names.
+
+    Boot-time validation runs in production via ConfigManager; tests poke
+    AgentLoop directly so they have to seed the lesson file themselves.
+    """
+    (tmp_path / "personalities.yaml").write_text(
+        "personalities:\n"
+        "  - name: default\n"
+        "    label: Default\n"
+        "    description: Neutral.\n"
+        '    overlay: ""\n'
+        "  - name: skeptical_cfo\n"
+        "    label: Skeptical CFO\n"
+        "    description: CFO.\n"
+        "    overlay: |\n"
+        "      Adopt the voice of a skeptical CFO.\n"
+        "  - name: vc_partner\n"
+        "    label: VC Partner\n"
+        "    description: VC.\n"
+        "    overlay: |\n"
+        "      Adopt the voice of a Series-B VC partner.\n",
+        encoding="utf-8",
+    )
+    # _CACHE keys on workspace path; clear so the new file takes effect.
+    personalities._CACHE.pop(tmp_path, None)
+
+
 def _make_loop(tmp_path: Path) -> AgentLoop:
+    _seed_personalities(tmp_path)
     config = Config()
     config.agents.master.workspace = str(tmp_path)
     return AgentLoop(

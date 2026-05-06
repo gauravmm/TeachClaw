@@ -9,7 +9,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from teachclaw import personalities
+from teachclaw import lessons, personalities
 from teachclaw import storage as storage_layout
 from teachclaw.agent.cache_monitor import PromptCacheMonitor
 from teachclaw.agent.compactor import Compactor
@@ -270,6 +270,7 @@ class AgentLoop:
                 storage_layout.common_dir(self.workspace_path).resolve(),
             ),
             write_roots=(),
+            forbidden_files=lessons.lesson_forbidden_files(self.workspace_path),
         )
         state = AddressState()
         # When the previous turn queued a follow-up (e.g. citation pushback),

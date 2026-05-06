@@ -28,12 +28,33 @@ teachclaw/
     telegrm.py       Telegram
     smtp_email.py    SMTP email
   config.py          Config (pydantic_settings), ConfigManager (YAML load/save)
+  lessons.py         Lesson-pack loader + validator (workspace IS the lesson)
   providers/         LLM provider registry; litellm_provider.py wraps LiteLLM
   session.py         SessionManager: per-address JSONL conversation history
   __main__.py        Entry point
 
 config/              Runtime config (config/config.yaml)
+lessons/             Lesson packs (the active lesson is the workspace)
+  <name>/
+    AGENTS.md          system-prompt skill/style file (read each turn)
+    personalities.yaml persona overlays
+    onboarding.yaml    welcome strings, example prompts, help text
+    infra.yaml         optional: MCP servers + media.shared_roots overlay
+    skills/            agent-readable skill packs
+    common/            agent-readable shared resources
+    storage/, sessions/, media/, cron/, HEARTBEAT.md  runtime (gitignored)
 ```
+
+The active lesson is selected by `agents.master.workspace` in
+`config.yaml`. Switching lessons = change that path, restart. See
+`spec/SWITCHMODE.md`. The lesson is validated in full at boot
+(`lessons.validate_workspace`); a misconfigured pack fails startup
+with an aggregated `LessonValidationError`.
+
+Lesson source files (`AGENTS.md`, `personalities.yaml`,
+`onboarding.yaml`, `infra.yaml`) are unreachable to the agent's
+filesystem tools — they sit outside `read_roots` and are also
+listed in `ToolContext.forbidden_files` as defence-in-depth.
 
 ## Message Bus (`bus.py`)
 
