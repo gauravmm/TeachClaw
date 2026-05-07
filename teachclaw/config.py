@@ -12,8 +12,6 @@ from teachclaw.agent.tools.base import ToolConfig
 from teachclaw.agent.tools.mcp_manager import MCPServerConfig
 from teachclaw.agent.tools.shell import ExecToolConfig
 from teachclaw.agent.tools.web import WebSearchConfig
-from teachclaw.channels.claude_code import ClaudeCodeConfig
-from teachclaw.channels.smtp_email import EmailConfig
 from teachclaw.channels.telegrm import TelegramConfig
 
 _DEFAULT_ELIDE_TOOLS: tuple[str, ...] = (
@@ -120,8 +118,6 @@ class MermaidConfig(BaseModel):
 class ChannelConfigs(BaseModel):
     """Optional built-in channel configuration."""
 
-    claude_code: ClaudeCodeConfig | None = None
-    email: EmailConfig | None = None
     telegram: TelegramConfig | None = None
 
     def __iter__(self) -> Iterator[tuple[str, BaseModel]]:

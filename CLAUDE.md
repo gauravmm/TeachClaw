@@ -26,7 +26,6 @@ teachclaw/
     base.py          ChannelConfig, BaseChannel, register_channel()
     manager.py       ChannelManager: owns channel tasks + outbound dispatchers
     telegrm.py       Telegram
-    smtp_email.py    SMTP email
   config.py          Config (pydantic_settings), ConfigManager (YAML load/save)
   lessons.py         Lesson-pack loader + validator (workspace IS the lesson)
   providers/         LLM provider registry; litellm_provider.py wraps LiteLLM

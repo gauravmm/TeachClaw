@@ -56,7 +56,6 @@ def _channel_display_name(channel: str) -> str:
     """Return a readable channel label for prompts."""
     known = {
         "telegram": "Telegram",
-        "email": "Email",
     }
     if channel in known:
         return known[channel]
