@@ -20,7 +20,7 @@ skill name is never a valid tool name. To use a skill, call `read_file`
 on the path shown below and follow the instructions inside; only then
 call the actual tools the skill names.
 
-{% if skills %}{% for name, skill in skills.items() %}- `{{ skill.path }}` — {{ skill.metadata.get('description') or name }}
+{% if skills %}{% for skill in skills %}- `{{ skill.path }}` — {{ skill.description }}
 {% endfor %}{% endif %}
 {% if tools %}
 ## Tools

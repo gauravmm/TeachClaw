@@ -58,3 +58,38 @@ def test_build_system_prompt_omits_personality_overlay(tmp_path: Path) -> None:
     system-prompt prefix."""
     prompt = build_system_prompt(tmp_path)
     assert "Persona for this conversation" not in prompt
+
+
+def test_build_system_prompt_lists_skills_with_frontmatter_descriptions(
+    tmp_path: Path,
+) -> None:
+    skills_dir = tmp_path / "skills"
+    (skills_dir / "alpha").mkdir(parents=True)
+    (skills_dir / "alpha" / "SKILL.md").write_text(
+        "---\ndescription: Do alpha things\n---\nbody",
+        encoding="utf-8",
+    )
+    # Bravo has no frontmatter — falls back to the directory name.
+    (skills_dir / "bravo").mkdir()
+    (skills_dir / "bravo" / "SKILL.md").write_text("just a body", encoding="utf-8")
+    # Charlie's frontmatter is broken YAML — must not crash the build.
+    (skills_dir / "charlie").mkdir()
+    (skills_dir / "charlie" / "SKILL.md").write_text(
+        "---\n: : oops\n---\nbody",
+        encoding="utf-8",
+    )
+
+    prompt = build_system_prompt(tmp_path)
+
+    assert "`skills/alpha/SKILL.md` — Do alpha things" in prompt
+    assert "`skills/bravo/SKILL.md` — bravo" in prompt
+    assert "`skills/charlie/SKILL.md` — charlie" in prompt
+
+
+def test_build_system_prompt_skips_directories_without_skill_md(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills"
+    (skills_dir / "incomplete").mkdir(parents=True)  # no SKILL.md
+
+    prompt = build_system_prompt(tmp_path)
+
+    assert "incomplete" not in prompt
