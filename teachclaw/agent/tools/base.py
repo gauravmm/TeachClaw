@@ -28,20 +28,15 @@ class ToolContext:
     """Runtime context passed to Tool.build() and Tool.execute() during agent operation."""
 
     workspace: Path
-    bus: MessageBus | None = None  # MessageBus; None for subagents/tests
+    bus: MessageBus | None = None  # None in tests
     media_repo: "MediaRepository | None" = None
-    address: MessageAddress | None = None  # Current session address; None for background/subagents
-    background_tasks: dict[str, Task] | None = None  # Live task handles; master loop only
+    address: MessageAddress | None = None  # Current session address
     file_snapshots: dict[Path, FileSnapshot] = field(default_factory=dict)
-    allowed_dir: Path | None = None  # legacy single-dir restriction (no sandbox case)
 
-    # Per-conversation sandbox. When storage_root is set the filesystem tools
-    # operate in sandbox mode: relative paths resolve against storage_root,
-    # absolute paths are rejected, and reads/writes are confined to the union
-    # of read_roots / write_roots (which may include storage_root, shared
-    # read-only directories like common/ and skills/, and per-user writable
-    # paths). When storage_root is None the legacy workspace-rooted behaviour
-    # applies — see _resolve_path in agent/tools/filesystem.py.
+    # Per-conversation sandbox. Filesystem tools resolve relative paths
+    # against storage_root, reject absolute paths, and confine reads/writes
+    # to storage_root + read_roots / write_roots (read_roots typically
+    # includes shared read-only directories like common/ and skills/).
     storage_root: Path | None = None
     read_roots: tuple[Path, ...] = ()
     write_roots: tuple[Path, ...] = ()

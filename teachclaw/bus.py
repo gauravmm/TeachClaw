@@ -119,18 +119,10 @@ class TypingEvent:
     is_typing: bool  # True = start indicator, False = stop
 
 
-@dataclass(frozen=True)
-class AttentionEvent:
-    """Attention (awake/asleep) state change for one address."""
-
-    address: MessageAddress
-    awake: bool  # True = just became awake, False = just went asleep
-
-
 # All events that flow through bus.inbound[addr]
 AddressEvent = InboundMessage | ToolResultEvent | SystemMessageEvent | SessionControlEvent
 # All events that flow through bus.outbound[channel]
-OutboundEvent = OutboundMessage | TypingEvent | AttentionEvent
+OutboundEvent = OutboundMessage | TypingEvent
 
 
 @dataclass

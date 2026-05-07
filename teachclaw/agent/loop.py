@@ -263,7 +263,6 @@ class AgentLoop:
             bus=self.bus,
             media_repo=self.media_repo,
             address=addr,
-            background_tasks=tracker.tasks,
             storage_root=storage_layout.storage_root(self.workspace_path, addr).resolve(),
             read_roots=(
                 storage_layout.skills_dir(self.workspace_path).resolve(),

@@ -94,7 +94,6 @@ async def test_process_llm_turn_sends_visible_response(tmp_path: Path) -> None:
             bus=loop.bus,
             media_repo=loop.media_repo,
             address=addr,
-            background_tasks=tracker.tasks,
         )
         await loop._process_llm_turn(
             session=session,
@@ -137,7 +136,6 @@ async def test_process_llm_turn_records_tool_calls_as_events(tmp_path: Path) -> 
             bus=loop.bus,
             media_repo=loop.media_repo,
             address=addr,
-            background_tasks=tracker.tasks,
         )
         await loop._process_llm_turn(
             session=session,
@@ -297,7 +295,6 @@ async def test_proactive_compaction_summarizes_when_estimate_exceeds_threshold(
             bus=loop.bus,
             media_repo=loop.media_repo,
             address=addr,
-            background_tasks=tracker.tasks,
         )
         await loop._process_llm_turn(
             session=session,
@@ -354,7 +351,6 @@ async def test_no_compaction_when_under_threshold(tmp_path: Path) -> None:
             bus=loop.bus,
             media_repo=loop.media_repo,
             address=addr,
-            background_tasks=tracker.tasks,
         )
         await loop._process_llm_turn(
             session=session,
@@ -464,7 +460,6 @@ async def test_invalid_citation_pushback_keeps_typing_indicator_on(tmp_path: Pat
             bus=loop.bus,
             media_repo=loop.media_repo,
             address=addr,
-            background_tasks=tracker.tasks,
         )
         outcome = await loop.response.apply(bad_response, session, tracker, call_ctx, addr, state)
 
@@ -497,7 +492,6 @@ async def test_invalid_citation_triggers_retry_then_postscript(tmp_path: Path) -
             bus=loop.bus,
             media_repo=loop.media_repo,
             address=addr,
-            background_tasks=tracker.tasks,
         )
         # First pass: bad citation → retry, no outbound, reminder injected.
         await loop.response.apply(bad_response, session, tracker, call_ctx, addr, state)
