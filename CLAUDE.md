@@ -33,7 +33,7 @@ teachclaw/
   session.py         SessionManager: per-address JSONL conversation history
   __main__.py        Entry point
 
-config/              Runtime config (config/config.yaml)
+config.yaml          Runtime config
 lessons/             Lesson packs (the active lesson is the workspace)
   <name>/
     AGENTS.md          system-prompt skill/style file (read each turn)
@@ -119,7 +119,7 @@ Each platform lives in `teachclaw/channels/<name>.py`:
 
 - `Config` is a `pydantic_settings.BaseSettings` (env prefix `BENCHCLAW_`, delimiter `__`)
 - `ToolsConfig` and `ChannelConfigs` are built dynamically from the tool/channel registries
-- Loaded from `config/config.yaml`; written on first run with defaults
+- Loaded from `config.yaml`; written on first run with defaults
 - Channel configs live in their channel files, not in `config.py`
 
 ## Running Locally
@@ -128,7 +128,7 @@ Each platform lives in `teachclaw/channels/<name>.py`:
 uv run teachclaw          # start all configured channels + agent
 ```
 
-Config file: `config/config.yaml` (created automatically on first run with defaults).
+Config file: `config.yaml` (created automatically on first run with defaults).
 
 ## Cautions
 

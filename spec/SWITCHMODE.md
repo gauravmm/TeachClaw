@@ -4,7 +4,7 @@ Today the assistant is hardwired around one course (AI in Business,
 Singapore). Course-specific content lives in five places: welcome
 strings in `commands.py`, personalities in `teachclaw/data/`,
 `AGENTS.md` + `skills/` in `workspace/`, and the kb MCP server in
-`config/config.yaml`. Swapping lessons means hand-editing each.
+`config.yaml`. Swapping lessons means hand-editing each.
 
 The fix is to stop treating "workspace" and "lesson" as separate
 concepts. A lesson is just a workspace. To switch, point the
@@ -27,7 +27,7 @@ package ships zero course-flavoured defaults.
    citation protocol.
 4. **Skills** — `workspace/skills/` (and seed `workspace_default/
    skills/`). Per-lesson but already in the right place.
-5. **MCP servers** — the `kb` server in `config/config.yaml`. Per-
+5. **MCP servers** — the `kb` server in `config.yaml`. Per-
    lesson knowledge base, not per-deployment.
 
 (1) and (2) are the only ones that don't already live in the
@@ -69,7 +69,7 @@ are `.gitignore`d so a lesson directory commits cleanly without
 dragging per-user state with it.
 
 ```
-config/config.yaml:
+config.yaml:
   agents:
     master:
       workspace: ./lessons/ai_in_business
@@ -326,7 +326,7 @@ One PR:
    constants in `commands.py:47-101,224-234`.
 4. Add `teachclaw/lessons.py` (~120 LOC); wire the four call sites
    above.
-5. Update `config/config.yaml` to set
+5. Update `config.yaml` to set
    `agents.master.workspace: ./lessons/ai_in_business`.
 6. Update `.gitignore` to ignore the runtime children
    (`lessons/*/storage/`, `lessons/*/sessions/`,

@@ -4,4 +4,9 @@ mcp_servers:
     command: sh
     args:
       - "-c"
-      - "cd /home/gauravmm/benchclaw_orchestration/lecturebot-knowledgebase-ai; uv run knowledge-mcp"
+      - "cd /home/gauravmm/benchclaw_orchestration/lecturebot-knowledgebase-ai;
+        uv run knowledge-mcp"
+media:
+  shared_roots:
+    cuteness: /home/gauravmm/benchclaw_orchestration/cute-db/cuteness
+    memes: /home/gauravmm/benchclaw_orchestration/lecturebot-knowledgebase-ai/data/raw/memes

@@ -53,7 +53,7 @@ though very little of the original code remains.
 uv run teachclaw
 ```
 
-Config file: `config/config.yaml`, created automatically on first run.
+Config file: `config.yaml`, created automatically on first run.
 By default it's tuned for `google/gemma-4-e4b-it`; small models can
 have quirks.
 

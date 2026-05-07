@@ -153,7 +153,7 @@ class Config(BaseSettings):
 class ConfigManager:
     """Context manager that loads config on enter and saves it on exit."""
 
-    def __init__(self, config_path: Path = Path("config") / "config.yaml"):
+    def __init__(self, config_path: Path = Path("config.yaml")):
         self._path = config_path
         self.config: Config | None = None
         self._write_on_exit = False

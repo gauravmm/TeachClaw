@@ -1,7 +1,7 @@
 *-plan.md
 
 TODOS
-config/
+config.yaml
 workspace/
 bridge/node_modules
 debug_dump

@@ -1,5 +1,5 @@
 pre_auth_welcome: |
-  Welcome — I'm the workshop assistant for the NTU BMES Agentic AI hackathon.
+  Welcome — I'm the workshop assistant for the A*STAR ROCK Agentic AI Course.
 
   I can:
   • Answer questions about the workshop material with citations you can audit (react {sources_reaction} to any reply to see the sources).
@@ -9,12 +9,12 @@ pre_auth_welcome: |
   To start, send /auth <code> using the code on the slide.
 
 group_welcome_pre_auth: |
-  I'm the workshop assistant for the NTU BMES Agentic AI hackathon.
+  I'm the workshop assistant for the A*STAR ROCK Agentic AI Course.
 
   An admin must authenticate this room first: /auth <code> using the code on the slide. (At least one bot operator must be a Telegram admin in this group.)
 
 group_welcome_authed: |
-  I'm the workshop assistant for the NTU BMES Agentic AI hackathon.
+  I'm the workshop assistant for the A*STAR ROCK Agentic AI Course.
 
   In this room:
   • Mention me or reply to one of my messages to talk to me. I ignore everything else.
@@ -39,7 +39,7 @@ example_prompts:
     prompt: Sketch the handoff between the triage agent and the reporter agent in Task 2. What safety and liveness properties does the design need?
 
 help_text: |
-  I'm a small assistant for the NTU BMES Agentic AI hackathon.
+  I'm a small assistant for the A*STAR ROCK Agentic AI Course.
 
   Send /start for example prompts you can tap to run.
   Commands: /auth, /personality, /clear (wipe this conversation), /forgetme (delete your data and re-auth).

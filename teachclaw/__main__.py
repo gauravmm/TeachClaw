@@ -74,7 +74,7 @@ def main() -> None:
         description="TeachClaw — personal AI assistant gateway",
     )
     parser.add_argument(
-        "--config", type=Path, default="config/config.yaml", help="config.yaml file to use"
+        "--config", type=Path, default="config.yaml", help="config.yaml file to use"
     )
     parser.add_argument(
         "--verbose",
