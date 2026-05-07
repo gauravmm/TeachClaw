@@ -1,6 +1,5 @@
 """Tool registry: manages tool lifecycle and execution."""
 
-import asyncio
 import contextlib
 from collections.abc import Iterable
 from typing import Any, Self
@@ -15,15 +14,13 @@ class ToolRegistry:
     """
     Registry for agent tools.
 
-    Manages tool construction, lifecycle (background tasks and async context
-    managers), and execution. Enter as an async context manager to start all
-    tool background() tasks and enter any tool async context managers.
+    Manages tool construction and execution. Enter as an async context
+    manager to enter any tool async context managers and the MCP manager.
     Raises RuntimeError if entered more than once on the same instance.
     """
 
     def __init__(self, tools_config: Any, ctx: ToolContext, mcp_manager: MCPManager | None = None):
         self._tools: dict[str, Tool] = {}
-        self._master_ctx = ctx
         self._mcp_manager = mcp_manager
         self._running = False
         self._exit_stack = contextlib.AsyncExitStack()
@@ -45,21 +42,17 @@ class ToolRegistry:
         for tool in self._tools.values():
             if hasattr(tool, "__aenter__"):
                 await self._exit_stack.enter_async_context(tool)  # type: ignore[arg-type]
-            if type(tool).background is not Tool.background:
-                tool._task = asyncio.create_task(tool.background(self._master_ctx), name=tool.name)
         if self._mcp_manager:
             await self._exit_stack.enter_async_context(self._mcp_manager)
         return self
 
     async def __aexit__(self, *exc_info: Any) -> None:
-        for tool in self._tools.values():
-            if tool._task:
-                tool._task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
-                    await asyncio.wait_for(asyncio.shield(tool._task), timeout=5.0)
-                tool._task = None
         await self._exit_stack.__aexit__(*exc_info)
         self._running = False
+
+    def get(self, name: str) -> Tool | None:
+        """Look up a tool by name. Returns None if not registered."""
+        return self._tools.get(name)
 
     def values(self) -> Iterable[Tool]:
         """Iterate over registered tools."""
@@ -106,4 +99,4 @@ class ToolRegistry:
     def is_terminal_when_lone(self, name: str) -> bool:
         """True if a turn whose only tool call is ``name`` should not be nudged."""
         tool = self._tools.get(name)
-        return bool(tool and type(tool).terminal_when_lone)
+        return bool(tool and tool.terminal_when_lone)

@@ -128,7 +128,7 @@ class Compactor:
         # main system prompt for a summarization instruction. We deliberately
         # do not pass tools to this call: the summarizer is not allowed to
         # take actions, only to compress.
-        history_messages = session._render_history(
+        history_messages = session.render_history(
             events_to_summarize,
             options=self.prompt_builder.render_options(),
         )

@@ -462,7 +462,7 @@ class Session:
             tool_name=event.tool_name,
         )
 
-    def _render_history(
+    def render_history(
         self,
         history: list[ConversationEvent],
         *,
@@ -494,7 +494,7 @@ class Session:
     ) -> list[dict[str, object]]:
         return [
             {"role": "system", "content": system_prompt},
-            *self._render_history(list(self.events), options=options),
+            *self.render_history(list(self.events), options=options),
         ]
 
     def clear(self, action: Literal["reset", "forget"] = "reset") -> None:

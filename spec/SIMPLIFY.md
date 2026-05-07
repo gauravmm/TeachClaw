@@ -1,161 +1,5 @@
 # TeachClaw — codebase simplification review
 
-## P0 — these aren't simplifications, they're crashes
-
-These have to be fixed before any of the rest matters. AST-parsing the tree
-found two files with **Python-2-only `except` syntax**, which raises
-`SyntaxError` at import time. They sit on the bot's import path, so the
-process can't actually start as committed:
-
-1. `teachclaw/auth.py:69` — `except OSError, ValueError, KeyError:`
-2. `teachclaw/auth.py:95` — `except OSError, ValueError:`
-3. `teachclaw/media.py:277` — `except FileNotFoundError, ValueError:`
-
-Fix is one keystroke per site (parens). `auth.py` is imported by every
-Telegram code path; `media.py` is imported in `__main__.py`. The fact that
-this is sitting on `master` strongly suggests the test suite isn't actually
-exercising channel boot — worth confirming `pytest` collects/runs
-`test_telegrm_commands.py` and `test_media_paths.py`.
-
----
-
-## High-impact structural simplifications
-
-### 1. CLAUDE.md describes an architecture that no longer exists
-
-This is the highest-leverage cleanup because every future contributor (and
-every sub-agent) is reading a document that drifts further from the code
-with each commit.
-
-CLAUDE.md claims:
-- `agent/skills.py`, `agent/subagent.py`, `tools/memory.py`,
-  `tools/message.py`, `tools/kill.py` exist — **none do**
-  (`find teachclaw -name 'subagent*' -o -name 'skills.py' -o -name 'memory.py' -o -name 'kill.py'`
-  returns nothing).
-- `register_tool()`, `register_channel()`, `register_tool_config()` are the
-  registration mechanism — **none exist**. `BUILTIN_TOOLS` is a static
-  tuple in `agent/tools/builtins.py`; `Config.channels` is a hardcoded
-  `ChannelConfigs` pydantic model.
-- `ToolContext` carries `is_subagent`, `subagent_manager`, `background_tasks`
-  for "the master loop only / subagents".
-- `master_only = True` lets tools opt out of subagent registries.
-
-What's actually in the repo: one master loop, one channel (Telegram), one
-tool registry, no subagents. Either resurrect the subagent system or
-**strike it from CLAUDE.md and the code**. Recommendation: strike — the
-spec list in `spec/` doesn't even reference subagents, and TODO.md has
-been moving away from that frame.
-
-Concrete code that goes when subagents go:
-
-- `ToolContext.is_subagent`, `ToolContext.subagent_manager` —
-  `teachclaw/agent/tools/base.py:32-33`. Never read anywhere.
-- `Tool.master_only` ClassVar mention in CLAUDE.md — there's no such
-  attribute on `Tool` (`teachclaw/agent/tools/base.py`); the doc is just
-  wrong.
-- The "None for subagents/tests" / "background/subagents" comments on
-  `ToolContext.bus` and `ToolContext.address` (`base.py:31, 33`).
-
-**Migration cost:** ~5 lines of code change + a CLAUDE.md rewrite. The
-CLAUDE.md rewrite is the work — it should reflect the simpler reality
-(one event-driven loop per address, static tool/channel manifests, no
-subagents).
-
-### 2. `BUILTIN_CHANNEL_CONFIGS` is a registry with no consumer
-
-`teachclaw/channels/builtins.py` exports a tuple of `(name, ConfigClass)`.
-`teachclaw/channels/__init__.py` re-exports it. **Nothing reads it.**
-Channel discovery happens in `teachclaw/config.py:118-127` via a
-hand-written `ChannelConfigs` model with one
-`telegram: TelegramConfig | None` field, and `ChannelManager.__init__`
-iterates `config.channels` directly.
-
-There are exactly two coherent end states:
-
-- **Delete the gadget**: drop `channels/builtins.py` and the
-  `BUILTIN_CHANNEL_CONFIGS` re-export. `ChannelConfigs` becomes the single
-  source of truth. This is the right call until a second channel actually
-  lands.
-- **Use the registry**: build `ChannelConfigs` dynamically from
-  `BUILTIN_CHANNEL_CONFIGS` (mirroring `ToolsConfig`). Only worth it if a
-  second channel is imminent.
-
-**Recommendation:** delete. Same applies to the doc claim that "channel
-files self-register via `register_channel()`" — there's no such function.
-
-### 3. `AttentionEvent` is a phantom in the outbound type union
-
-`teachclaw/bus.py:122-133` defines `AttentionEvent` and includes it in
-`OutboundEvent = OutboundMessage | TypingEvent | AttentionEvent`. **No
-code publishes or consumes it.** `ChannelManager._dispatch_channel` only
-branches on `TypingEvent` vs default
-(`teachclaw/channels/manager.py:65-79`).
-
-Drop `AttentionEvent` entirely and tighten the union to
-`OutboundMessage | TypingEvent`. The dispatcher loop becomes a clean
-two-arm match.
-
-### 4. The bus has two consume paths; only one is used
-
-`MessageBus.consume_inbound(address=...)` (single event) at `bus.py:202-204`
-is referenced **only in the docstring above it**. Every real call site
-uses `consume_inbound_batch`. Delete `consume_inbound` and the docstring
-example.
-
-While here: the docstring at `bus.py:147-167` advertises
-`publish_inbound(addr, msg)` *and* `publish_inbound(addr, msg1, msg2, …)`
-*and* `publish_inbound(addr, tool_result)`. That's just one function with
-`*events`. The example list is doing more harm than good — it suggests
-there are several flavors when there's one.
-
-### 5. `ToolContext.allowed_dir` is genuinely dead
-
-`teachclaw/agent/tools/base.py:36` keeps `allowed_dir: Path | None = None`
-with a comment "legacy single-dir restriction (no sandbox case)".
-`_resolve_path` in `filesystem.py:73-75` checks it. **Nothing in the repo
-sets it** (`grep -rn "allowed_dir" teachclaw tests` shows only the field,
-the doc, and the consumer — no producer).
-
-The agent loop always builds the `call_ctx` with a `storage_root`
-(`loop.py:243-258`), so the legacy branch in `_resolve_path`
-(`filesystem.py:71-77`) is unreachable in production. Delete:
-
-- `ToolContext.allowed_dir`
-- The `if ctx.storage_root is not None:` / else split in `_resolve_path` —
-  collapse to the sandbox path
-- The "Legacy mode" paragraph in the docstring
-
-That cuts `_resolve_path` roughly in half and removes a "two ways to do
-the same thing" smell directly off the hottest tool path.
-
-### 6. `Session._render_history` is a private method called publicly
-
-`teachclaw/agent/compactor.py:135-138` does
-`session._render_history(events_to_summarize, options=...)`. The leading
-underscore is then a lie — it's part of the public contract. Rename to
-`render_history` or push the call site through a public method on
-`Session` that takes the doomed event list. Trivial fix; the bigger win
-is that someone refactoring `Session` won't assume `_render_history` is
-safe to remove.
-
-### 7. `terminal_when_lone` lookup goes through `type(tool)`
-
-`teachclaw/agent/tools/registry.py:96-100`:
-
-```python
-def is_terminal_when_lone(self, name: str) -> bool:
-    tool = self._tools.get(name)
-    return bool(tool and type(tool).terminal_when_lone)
-```
-
-The `type(tool).` indirection is to read the ClassVar without picking up
-an instance attribute, but in practice nothing sets it on the instance.
-`bool(tool and tool.terminal_when_lone)` reads the same. Tiny, but the
-`type()` call is the kind of thing that makes readers wonder whether
-there's a subtle reason.
-
----
-
 ## Medium-impact: fewer concepts, fewer special cases
 
 ### 8. `PromptBuilder` and `ContextBuilder` are two layers for one job
@@ -211,29 +55,6 @@ Then `resolve_file`, `set_caption`, `_normalize_relpath` each become a
 Until there's a second prefix, a single `str` constant +
 `result.tool_name.startswith(CITATION_TOOL_PREFIX)` reads better.
 Tuple-of-one is a speculative-future smell.
-
-### 11. `Tool.background()` and `tool._task` plumbing carries weight that doesn't pay
-
-`agent/tools/base.py:118-120` — every Tool can have a `background()`
-coroutine started by `ToolRegistry.__aenter__` and a
-`_task: Task | None = None` attribute. In the current codebase, exactly
-one tool overrides `background`: `CronTool`. Compare cron-specific
-machinery (`agent/tools/cron/tool.py:108-134`) to a hypothetical refactor
-where the cron loop is just a separate task started by `AgentLoop.run()`
-— `Tool.background()` becomes unused.
-
-This is a "less general mechanism" simplification: today there's a
-13-line lifecycle (cancel + 5s wait + suppress) on every Tool and the
-only client is one tool. Pulling cron's loop out into `AgentLoop`
-(alongside the new-address dispatcher) deletes:
-
-- `Tool.background` + `Tool._task`
-- The `if type(tool).background is not Tool.background:` branch in
-  `ToolRegistry.__aenter__`
-- The cancel-and-wait-on-tool-tasks block in `__aexit__`
-
-Cost: cron then needs an explicit task in `AgentLoop`, but it's already
-constructed there in spirit. Net deletion.
 
 ### 12. `OutboundMessage.metadata['tool_calls']` is a typed payload smuggled as `dict[str, Any]`
 
@@ -411,25 +232,9 @@ retire completed specs would compress the design surface significantly.
 
 ## Suggested order of operations
 
-If you want to act on this:
-
-1. **First** — fix the three `except` syntax errors. Otherwise none of
-   this ships.
-2. **Then** — rewrite `CLAUDE.md` to match reality and delete the
-   subagent vestiges (#1, #5, the dead `is_subagent`/`subagent_manager`
-   fields). This is the single biggest readability win and unblocks
-   future contributors / agents from chasing ghosts.
-3. **Then** — the strict deletions: `BUILTIN_CHANNEL_CONFIGS`,
-   `AttentionEvent`, `consume_inbound` singular, `allowed_dir`,
-   `Tool.background` lifecycle (#2, #3, #4, #5, #11). All independent,
-   all small, all pure deletes.
-4. **Then** — the structural moves: merge
-   `PromptBuilder`+`ContextBuilder` (#8), promote `tool_calls` onto
-   `OutboundMessage` (#12), discriminated-union for media paths (#9).
-   These are real refactors but each is local.
-5. **Last** — the type-safety upgrades on session serialization (#14)
-   and inline-image truncation (#13). Higher value but more invasive.
-
-Items 1–3 are 1–2 hours of work and remove ~150 LOC of dead/misleading
-code. Items 4–5 are 4–6 hours and improve the type story considerably
-without changing observable behavior.
+1. Structural moves: merge `PromptBuilder`+`ContextBuilder` (#8),
+   promote `tool_calls` onto `OutboundMessage` (#12),
+   discriminated-union for media paths (#9). Each is local.
+2. Type-safety upgrades on session serialization (#14) and
+   inline-image truncation (#13). Higher value but more invasive.
+3. Lower-impact cleanups (#15–#25) as opportunity allows.

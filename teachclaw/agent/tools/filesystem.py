@@ -25,72 +25,53 @@ def _is_within(path: Path, root: Path) -> bool:
 
 
 def _resolve_path(path: str, ctx: ToolContext, *, write: bool = False) -> Path:
-    """Resolve a tool-supplied path and enforce sandbox or legacy restrictions.
+    """Resolve a tool-supplied path and enforce sandbox restrictions.
 
-    Sandbox mode (storage_root set on the context):
-        - Absolute paths are rejected.
-        - Relative paths resolve against storage_root.
-        - The post-resolve target must lie within at least one of the
-          configured roots (storage_root + read_roots, or storage_root +
-          write_roots when write=True).
-        - `..` segments are caught implicitly: after .resolve() any escape
-          fails the within-root check.
-
-    Legacy mode (no storage_root):
-        - Behaviour matches the prior tool: relative paths resolve against
-          ctx.workspace, absolute paths are accepted, and ctx.allowed_dir
-          (if set) is enforced as a single dir restriction.
+    - Absolute paths are rejected.
+    - Relative paths resolve against ``storage_root``.
+    - The post-resolve target must lie within at least one of the
+      configured roots (``storage_root`` + ``read_roots``, or
+      ``storage_root`` + ``write_roots`` when ``write=True``).
+    - ``..`` segments are caught implicitly: after ``.resolve()`` any escape
+      fails the within-root check.
     """
-    if ctx.storage_root is not None:
-        if path.startswith("/"):
-            raise PermissionError(
-                "Absolute paths are not allowed in this conversation. Use a relative path."
-            )
-        # `skills/` and `common/` are workspace-rooted prefixes so the model
-        # can address shared resources without counting `..` segments.
-        # Anything else resolves under the conversation's own storage root.
-        first = path.split("/", 1)[0]
-        if first in _WORKSPACE_PREFIXES:
-            base = ctx.workspace
-        else:
-            base = ctx.storage_root
-        resolved = (base / path).expanduser().resolve()
-        if resolved in ctx.forbidden_files:
-            raise PermissionError(f"Path '{path}' is not readable.")
-        sandbox_roots: tuple[Path, ...] = (ctx.storage_root.resolve(),)
-        extra = ctx.write_roots if write else ctx.read_roots
-        sandbox_roots = sandbox_roots + tuple(r.resolve() for r in extra)
-        if not any(_is_within(resolved, root) for root in sandbox_roots):
-            kind = "write" if write else "read"
-            raise PermissionError(
-                f"Path '{path}' resolves outside this conversation's allowed {kind} roots."
-            )
-        return resolved
-
-    resolved = Path(path) if path.startswith("/") else ctx.workspace / path
-    resolved = resolved.expanduser().resolve()
-
-    # Must be within allowed_dir if specified, to prevent accidental or malicious access to sensitive files outside the workspace.
-    if ctx.allowed_dir and not str(resolved).startswith(str(ctx.allowed_dir.resolve())):
-        raise PermissionError(f"Path {path} is outside allowed directory {ctx.allowed_dir}")
+    if ctx.storage_root is None:
+        raise RuntimeError("ToolContext.storage_root is required for filesystem tools.")
+    if path.startswith("/"):
+        raise PermissionError(
+            "Absolute paths are not allowed in this conversation. Use a relative path."
+        )
+    # `skills/` and `common/` are workspace-rooted prefixes so the model
+    # can address shared resources without counting `..` segments.
+    # Anything else resolves under the conversation's own storage root.
+    first = path.split("/", 1)[0]
+    base = ctx.workspace if first in _WORKSPACE_PREFIXES else ctx.storage_root
+    resolved = (base / path).expanduser().resolve()
+    if resolved in ctx.forbidden_files:
+        raise PermissionError(f"Path '{path}' is not readable.")
+    extra = ctx.write_roots if write else ctx.read_roots
+    sandbox_roots = (ctx.storage_root.resolve(),) + tuple(r.resolve() for r in extra)
+    if not any(_is_within(resolved, root) for root in sandbox_roots):
+        kind = "write" if write else "read"
+        raise PermissionError(
+            f"Path '{path}' resolves outside this conversation's allowed {kind} roots."
+        )
     return resolved
 
 
 def _display_path(path: Path, ctx: ToolContext) -> str:
     """Return a sandbox- or workspace-relative display path when possible."""
+    candidates: list[Path] = []
     if ctx.storage_root is not None:
+        candidates.append(ctx.storage_root.resolve())
+        candidates.extend(r.resolve() for r in ctx.read_roots)
+    candidates.append(ctx.workspace)
+    for root in candidates:
         try:
-            return str(path.relative_to(ctx.storage_root.resolve()))
+            return str(path.relative_to(root))
         except ValueError:
-            for root in ctx.read_roots:
-                try:
-                    return str(path.relative_to(root.resolve()))
-                except ValueError:
-                    continue
-    try:
-        return str(path.relative_to(ctx.workspace))
-    except ValueError:
-        return str(path)
+            continue
+    return str(path)
 
 
 def _record_snapshot(ctx: ToolContext, path: Path) -> None:

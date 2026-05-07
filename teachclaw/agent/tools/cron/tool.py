@@ -69,10 +69,12 @@ class CronTool(Tool):
         store_path: Path,
         bus: MessageBus | None,
     ):
+        import asyncio
+
         self._store_path = store_path
         self._bus = bus
         self._store: CronStore | None = None
-        self._wakeup: Any = None  # asyncio.Event, set after loop starts
+        self._wakeup = asyncio.Event()
 
     @property
     def name(self) -> str:
@@ -113,11 +115,10 @@ class CronTool(Tool):
         job.updated_at = start
         self._store.executed(job.id, start)
 
-    async def background(self, ctx: ToolContext) -> None:
-        """Run the cron loop until cancelled."""
+    async def run_loop(self) -> None:
+        """Run the cron loop until cancelled. Started as a task by AgentLoop."""
         import asyncio
 
-        self._wakeup = asyncio.Event()
         try:
             async with CronStore(self._store_path) as store:
                 self._store = store
@@ -191,7 +192,6 @@ class CronTool(Tool):
         raise ValueError("either every_seconds, cron_expr, or at is required")
 
     def _signal_wakeup(self) -> None:
-        assert self._wakeup is not None
         self._wakeup.set()
 
     def _add_job(

@@ -23,6 +23,7 @@ from teachclaw.agent.response import (
     stringify_tool_result,
 )
 from teachclaw.agent.tools.base import ToolContext
+from teachclaw.agent.tools.cron.tool import CronTool
 from teachclaw.agent.tools.mcp_manager import MCPManager
 from teachclaw.agent.tools.registry import ToolRegistry
 from teachclaw.bus import (
@@ -310,6 +311,9 @@ class AgentLoop:
                             tg.create_task(self._address_loop(addr), name=f"agent-{addr}")
 
                     tg.create_task(_dispatch(), name="agent-dispatch")
+                    cron_tool = self.tools.get("cron")
+                    if isinstance(cron_tool, CronTool):
+                        tg.create_task(cron_tool.run_loop(), name="cron-loop")
             except* asyncio.CancelledError:
                 # Cooperative shutdown: TaskGroup has already cancelled and
                 # awaited every per-address task plus the dispatcher; swallow

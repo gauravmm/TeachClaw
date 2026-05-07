@@ -150,17 +150,6 @@ class MessageBus:
 
     Outbound messages are queued per-channel; any consumer for that channel
     receives the next message regardless of which chat it came from.
-
-    Usage:
-        await bus.publish_inbound(addr, msg)              # enqueues one InboundMessage
-        await bus.publish_inbound(addr, msg1, msg2, ...)  # enqueues multiple
-        await bus.publish_inbound(addr, tool_result)      # enqueues ToolResultEvent
-        await bus.publish_inbound(addr, system_event)     # enqueues SystemEvent
-        await bus.consume_inbound(address=addr)           # next AddressEvent for that address
-        new_addrs = bus.subscribe_new_addresses()         # Queue[MessageAddress] of new addresses
-
-        await bus.publish_outbound(msg)             # enqueues to msg.address.channel queue
-        await bus.consume_outbound(channel="x")     # next message for channel x
     """
 
     def __init__(self):
@@ -191,10 +180,6 @@ class MessageBus:
                 sub.put_nowait(addr)
         for event in events:
             await self.inbound[addr].put(event)
-
-    async def consume_inbound(self, *, address: MessageAddress) -> AddressEvent:
-        """Consume the next inbound event for the given address (blocks until available)."""
-        return await self.inbound[address].get()
 
     async def consume_inbound_batch(self, *, address: MessageAddress) -> InboundMessageBatch:
         """Block until at least one inbound event is available, then drain the queue.

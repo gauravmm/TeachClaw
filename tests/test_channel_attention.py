@@ -224,8 +224,8 @@ async def test_message_bus_publish_inbound_accepts_one_or_more() -> None:
     m2 = InboundMessage(address=address, sender_id="u2", content="second", timestamp=_ts(1))
     await bus.publish_inbound(address, m1, m2)
 
-    first = await bus.consume_inbound(address=address)
-    second = await bus.consume_inbound(address=address)
+    first = await bus.inbound[address].get()
+    second = await bus.inbound[address].get()
     assert isinstance(first, InboundMessage)
     assert isinstance(second, InboundMessage)
     assert [first.content, second.content] == ["first", "second"]

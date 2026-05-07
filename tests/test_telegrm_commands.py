@@ -119,7 +119,7 @@ async def test_cmd_clear_publishes_reset_event_in_dm(tmp_path: Path):
 
     await cmd_module.cmd_clear(channel, update, MagicMock())
 
-    event = await channel.bus.consume_inbound(address=addr)
+    event = await channel.bus.inbound[addr].get()
     assert isinstance(event, SessionControlEvent)
     assert event.action == "reset"
     assert state.replies == {}
@@ -156,7 +156,7 @@ async def test_cmd_forgetme_publishes_forget_event_dm_message(tmp_path: Path):
 
     await cmd_module.cmd_forgetme(channel, update, MagicMock())
 
-    event = await channel.bus.consume_inbound(address=addr)
+    event = await channel.bus.inbound[addr].get()
     assert isinstance(event, SessionControlEvent)
     assert event.action == "forget"
     update.effective_message.reply_text.assert_awaited_once()
@@ -174,7 +174,7 @@ async def test_cmd_forgetme_works_without_prior_auth(tmp_path: Path):
     await cmd_module.cmd_forgetme(channel, update, MagicMock())
 
     addr = channel.addr(100)
-    event = await channel.bus.consume_inbound(address=addr)
+    event = await channel.bus.inbound[addr].get()
     assert isinstance(event, SessionControlEvent)
     assert event.action == "forget"
 

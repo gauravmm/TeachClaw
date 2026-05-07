@@ -1,7 +1,6 @@
 """Base class for agent tools."""
 
 from abc import abstractmethod
-from asyncio import Task
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -72,7 +71,6 @@ class Tool:
     """
 
     Params: ClassVar[type[BaseModel]] = _NoParams
-    _task: Task | None = None
 
     # When True, calling this tool counts as the model's user-facing reply for
     # the turn. The agent loop will not inject the "you did not provide a text
@@ -113,10 +111,6 @@ class Tool:
     @abstractmethod
     async def execute(self, ctx: "ToolContext", **kwargs: Any) -> ToolResult:
         """Execute the tool with validated parameters."""
-        pass
-
-    async def background(self, ctx: "ToolContext") -> None:
-        """Optional long-running coroutine started by ToolRegistry.__aenter__. No-op by default."""
         pass
 
     def to_schema(self) -> dict[str, Any]:

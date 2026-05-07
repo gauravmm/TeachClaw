@@ -117,7 +117,7 @@ async def test_execute_job_records_timestamp_state(tmp_path) -> None:
         await tool._execute_job(job)
         after = datetime.now().astimezone()
 
-        event = await bus.consume_inbound(address=address)
+        event = await bus.inbound[address].get()
 
         assert isinstance(event, SystemMessageEvent)
         assert event.content == "tick"

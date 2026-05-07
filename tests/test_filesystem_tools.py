@@ -27,7 +27,7 @@ async def test_glob_returns_workspace_relative_matches(tmp_path: Path) -> None:
     (tmp_path / "alpha" / "two.md").write_text("two\n", encoding="utf-8")
 
     tool = GlobTool()
-    ctx = ToolContext(workspace=tmp_path)
+    ctx = ToolContext(workspace=tmp_path, storage_root=tmp_path)
 
     result = await tool.execute(ctx, pattern="**/*.txt")
 
@@ -42,7 +42,7 @@ async def test_grep_searches_workspace_relative_directory(tmp_path: Path) -> Non
     (tmp_path / "pkg" / "notes.txt").write_text("register_tool in text\n", encoding="utf-8")
 
     tool = GrepTool()
-    ctx = ToolContext(workspace=tmp_path)
+    ctx = ToolContext(workspace=tmp_path, storage_root=tmp_path)
 
     result = await tool.execute(ctx, pattern="register_tool", path="pkg", file_pattern="*.py")
 
@@ -55,7 +55,7 @@ async def test_grep_supports_regex_on_single_file(tmp_path: Path) -> None:
     file_path.write_text("INFO start\nERROR failed\n", encoding="utf-8")
 
     tool = GrepTool()
-    ctx = ToolContext(workspace=tmp_path)
+    ctx = ToolContext(workspace=tmp_path, storage_root=tmp_path)
 
     result = await tool.execute(ctx, pattern="^ERROR", path="app.log", is_regex=True)
 
@@ -68,7 +68,7 @@ async def test_write_existing_file_requires_prior_read(tmp_path: Path) -> None:
     file_path.write_text("old\n", encoding="utf-8")
 
     tool = WriteFileTool()
-    ctx = ToolContext(workspace=tmp_path)
+    ctx = ToolContext(workspace=tmp_path, storage_root=tmp_path)
 
     with pytest.raises(RuntimeError, match="has not been read in this session"):
         await tool.execute(ctx, path="notes.txt", content="new\n")
@@ -81,7 +81,7 @@ async def test_write_existing_file_fails_if_changed_after_read(tmp_path: Path) -
 
     read_tool = ReadFileTool()
     write_tool = WriteFileTool()
-    ctx = ToolContext(workspace=tmp_path)
+    ctx = ToolContext(workspace=tmp_path, storage_root=tmp_path)
 
     assert await read_tool.execute(ctx, path="notes.txt") == "old\n"
     file_path.write_text("externally changed\n", encoding="utf-8")
@@ -99,7 +99,7 @@ async def test_edit_existing_file_succeeds_after_read_and_refreshes_snapshot(
 
     read_tool = ReadFileTool()
     edit_tool = EditFileTool()
-    ctx = ToolContext(workspace=tmp_path)
+    ctx = ToolContext(workspace=tmp_path, storage_root=tmp_path)
 
     assert await read_tool.execute(ctx, path="notes.txt") == "hello world\n"
     result = await edit_tool.execute(
