@@ -73,6 +73,23 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = "--cov=teachclaw --cov-report=term-missing --cov-report=xml"
+
+[tool.coverage.run]
+source = ["teachclaw"]
+branch = true
+omit = ["teachclaw/__main__.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "\\.\\.\\.",
+]
+fail_under = 55
 
 [tool.pyright]
 reportIncompatibleMethodOverride = "none"
