@@ -16,7 +16,7 @@ from teachclaw.utils import _parse_timestamp, ensure_aware, now_aware
 MAX_SESSIONS = 50
 _MAX_REASONING_CHARS = 500
 
-EventKind = Literal["user", "assistant", "tool", "system", "summary"]
+EventKind = Literal["user", "assistant", "tool", "system", "summary", "clear"]
 
 
 @dataclass(frozen=True)
@@ -274,6 +274,30 @@ class SummaryEvent(BaseEvent):
         return {"role": "user", "content": self.content}
 
 
+@dataclass
+class ClearEvent(BaseEvent):
+    """Persistence-only marker for /clear and /forgetme.
+
+    Written to the JSONL log so the file retains the prior conversation
+    instead of being truncated. On load, events before the most recent
+    ClearEvent are dropped from the rendered history.
+    """
+
+    KIND: ClassVar[Literal["clear"]] = "clear"
+
+    action: Literal["reset", "forget"] = "reset"
+
+    @property
+    def kind(self) -> Literal["clear"]:
+        return self.KIND
+
+    def to_record(self) -> dict[str, Any]:
+        return {**self._record_base(), "action": self.action}
+
+    def to_llm_message(self, **_: Any) -> dict[str, Any]:
+        raise NotImplementedError("ClearEvent is a persistence marker; not rendered to LLM")
+
+
 ConversationEvent = UserEvent | AssistantEvent | ToolEvent | SystemEvent | SummaryEvent
 
 
@@ -322,6 +346,9 @@ class Session:
     A conversation session.
 
     Stores typed conversation events in JSONL format for persistence.
+    When a log path is attached (see ``attach_log``), each ``append`` and
+    ``clear`` writes a single line incrementally so the file stays current
+    between shutdowns.
     """
 
     addr: MessageAddress
@@ -329,10 +356,28 @@ class Session:
     created_at: datetime = field(default_factory=now_aware)
     updated_at: datetime = field(default_factory=now_aware)
     metadata: dict[str, Any] = field(default_factory=dict)
+    _log_path: Path | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         self.created_at = ensure_aware(self.created_at)
         self.updated_at = ensure_aware(self.updated_at)
+
+    def attach_log(self, path: Path, *, write_header: bool) -> None:
+        """Bind this session to a JSONL file for incremental writes.
+
+        When ``write_header`` is True (new session), the file is created
+        with a metadata header line. When False (loaded session), the
+        existing file is reused and subsequent events append to it.
+        """
+        self._log_path = path
+        if write_header:
+            self.save(path)
+
+    def _append_log_line(self, record: dict[str, Any]) -> None:
+        if self._log_path is None:
+            return
+        with open(self._log_path, "a") as f:
+            f.write(json.dumps(record) + "\n")
 
     @property
     def has_summary(self) -> bool:
@@ -342,6 +387,7 @@ class Session:
     def append(self, event: ConversationEvent) -> None:
         self.events.append(event)
         self.updated_at = now_aware()
+        self._append_log_line(event.to_record())
 
     def compact_with_summary(self, summary: str, *, keep_from_index: int = -1) -> None:
         """Replace conversation history with a SummaryEvent + optional verbatim tail.
@@ -355,6 +401,8 @@ class Session:
         )
         self.events = [SummaryEvent(content=summary), *kept]
         self.updated_at = now_aware()
+        if self._log_path is not None:
+            self.save(self._log_path)
 
     @staticmethod
     def _render_event_message(
@@ -450,10 +498,16 @@ class Session:
             *self._render_history(list(self.events), options=options),
         ]
 
-    def clear(self) -> None:
-        """Clear all events."""
+    def clear(self, action: Literal["reset", "forget"] = "reset") -> None:
+        """Clear all events from the in-memory history.
+
+        Writes a ClearEvent marker to the log file so the prior conversation
+        is retained on disk and can be sliced off at load time.
+        """
+        marker = ClearEvent(action=action)
         self.events = []
         self.updated_at = now_aware()
+        self._append_log_line(marker.to_record())
 
     def describe_current_session(self) -> str:
         """Return a readable prompt label for the current chat when possible."""
@@ -476,7 +530,15 @@ class Session:
 
     @classmethod
     def load(cls, path: Path) -> "Session | None":
-        """Load a session from a JSONL file. Returns None if file missing or invalid."""
+        """Load a session from a JSONL file. Returns None if file missing or invalid.
+
+        ClearEvent markers truncate the rendered history: events written
+        before the most recent ClearEvent are dropped from the returned
+        ``events`` list (they remain on disk as a record). ``updated_at``
+        is taken from the most recent record's timestamp when present, so
+        appends made after the metadata header was written are visible to
+        archive eviction.
+        """
         if not path.exists():
             return None
 
@@ -486,6 +548,8 @@ class Session:
             created_at = None
             updated_at = None
             addr: MessageAddress | None = None
+            slice_from: int = 0
+            last_record_ts: datetime | None = None
 
             with open(path) as f:
                 for line in f:
@@ -505,6 +569,14 @@ class Session:
                         )
                         if data.get("address"):
                             addr = MessageAddress.from_string(data["address"])
+                        continue
+
+                    if ts_str := data.get("timestamp"):
+                        with suppress(ValueError, TypeError):
+                            last_record_ts = _parse_timestamp(ts_str)
+
+                    if data.get("kind") == "clear":
+                        slice_from = len(events)
                     else:
                         events.append(event_from_record(data))
 
@@ -512,11 +584,13 @@ class Session:
                 logger.warning(f"No address in session file {path}, skipping")
                 return None
 
+            events = events[slice_from:]
+
             return cls(
                 addr=addr,
                 events=events,
                 created_at=created_at or now_aware(),
-                updated_at=updated_at or now_aware(),
+                updated_at=last_record_ts or updated_at or now_aware(),
                 metadata=metadata,
             )
         except Exception as e:
@@ -568,11 +642,15 @@ class SessionManager:
             sessions = sessions[:MAX_SESSIONS]
 
         self._cache = {s.addr: s for s in sessions}
+        for session in self._cache.values():
+            session.attach_log(self._get_session_path(session.addr), write_header=False)
         return self
 
     async def __aexit__(self, *_: Any) -> None:
-        for session in self._cache.values():
-            session.save(self._get_session_path(session.addr))
+        # Sessions persist incrementally via attach_log + append/clear, so
+        # there's nothing to flush on shutdown. Keeping this hook so callers
+        # can still use SessionManager as an async context manager.
+        return None
 
     def _archive(self, s: Session) -> None:
         path = self._get_session_path(s.addr)
@@ -589,7 +667,8 @@ class SessionManager:
 
     def get(self, key: MessageAddress) -> Session:
         if key not in self._cache:
-            self._cache[key] = Session(addr=key)
+            session = Session(addr=key)
+            self._cache[key] = session
             if len(self._cache) > MAX_SESSIONS:
                 oldest = min(
                     (s for s in self._cache.values() if s.addr != key),
@@ -597,6 +676,7 @@ class SessionManager:
                 )
                 self._archive(oldest)
                 del self._cache[oldest.addr]
+            session.attach_log(self._get_session_path(key), write_header=True)
         return self._cache[key]
 
     def clear(self, key: MessageAddress) -> None:

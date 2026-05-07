@@ -153,7 +153,7 @@ class AgentLoop:
         state: AddressState,
         addr: MessageAddress,
     ) -> None:
-        session.clear()
+        session.clear(action=event.action)
         self.cache_monitor.forget(addr)
         self._reset_turn_state(state)
         if event.action == "reset":

@@ -260,6 +260,52 @@ async def test_session_manager_clear_archives(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_session_manager_persists_incrementally(tmp_path: Path):
+    """Each append writes to disk immediately; no explicit flush needed."""
+    addr = MessageAddress(channel="telegram", chat_id="incremental")
+
+    async with SessionManager(tmp_path) as sm:
+        s = sm.get(addr)
+        s.append(UserEvent(content="first"))
+
+        # Read file from a fresh loader before the manager exits.
+        path = tmp_path / "telegramincremental.jsonl"
+        mid = Session.load(path)
+        assert mid is not None
+        assert [e.content for e in mid.events] == ["first"]
+
+        s.append(UserEvent(content="second"))
+        mid2 = Session.load(path)
+        assert mid2 is not None
+        assert [e.content for e in mid2.events] == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_session_clear_logs_marker_and_slices_on_load(tmp_path: Path):
+    """`/clear` must keep prior events on disk; load drops everything before
+    the most recent ClearEvent."""
+    addr = MessageAddress(channel="telegram", chat_id="clearmarker")
+    path = tmp_path / "telegramclearmarker.jsonl"
+
+    async with SessionManager(tmp_path) as sm:
+        s = sm.get(addr)
+        s.append(UserEvent(content="before-clear"))
+        s.clear(action="reset")
+        s.append(UserEvent(content="after-clear"))
+
+    # On-disk file should still contain the pre-clear event line for audit.
+    raw = path.read_text().splitlines()
+    kinds = [line for line in raw if '"kind": "clear"' in line]
+    assert len(kinds) == 1, raw
+    assert any('"content": "before-clear"' in line for line in raw)
+
+    # Reload should expose only post-clear history.
+    async with SessionManager(tmp_path) as sm2:
+        s2 = sm2.get(addr)
+        assert [e.content for e in s2.events] == ["after-clear"]
+
+
+@pytest.mark.asyncio
 async def test_session_manager_max_sessions(tmp_path: Path):
     """Sessions beyond MAX_SESSIONS are archived on __aenter__."""
     # Pre-create MAX_SESSIONS + 5 session files
