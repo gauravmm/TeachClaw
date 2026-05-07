@@ -26,7 +26,7 @@ async def test_last_run_at_round_trips_as_iso_timestamp(tmp_path) -> None:
         message="heartbeat",
         deliver_to=_address(),
         schedule=CronScheduleEvery(every=timedelta(minutes=30)),
-        state=CronJobState(last_run_at=last_run_at, last_status="ok"),
+        state=CronJobState(last_run_at=last_run_at),
     )
     store_path = tmp_path / "jobs.json"
 
@@ -61,9 +61,15 @@ async def test_schedule_every_serializes_as_duration_string(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_last_run_at_accepts_iso_datetime(tmp_path) -> None:
+async def test_legacy_record_loads_and_drops_obsolete_fields(tmp_path) -> None:
+    """Records written by older code carry ``last_status`` / ``last_error``
+    on state and ``enabled`` on the job. The new schema drops those —
+    pydantic should ignore the extras without raising."""
     last_run = datetime(2026, 3, 10, 9, 14, 47).astimezone()
-    iso = last_run.isoformat(timespec="seconds")
+    # Use a future anchor so the loaded job survives next_run() filtering.
+    anchor = datetime.now().astimezone() + timedelta(hours=1)
+    iso_run = last_run.isoformat(timespec="seconds")
+    iso_anchor = anchor.isoformat(timespec="seconds")
     store_path = tmp_path / "jobs.json"
     store_path.write_text(
         json.dumps(
@@ -75,14 +81,14 @@ async def test_last_run_at_accepts_iso_datetime(tmp_path) -> None:
                         "message": "legacy",
                         "deliver_to": {"channel": "telegram", "chat_id": "123456"},
                         "state": {
-                            "last_run_at": iso,
+                            "last_run_at": iso_run,
                             "last_status": "ok",
                             "last_error": None,
                         },
                         "enabled": True,
-                        "schedule": {"every": 1800.0, "anchor": iso, "until": None},
-                        "created_at": iso,
-                        "updated_at": iso,
+                        "schedule": {"every": 1800.0, "anchor": iso_anchor, "until": None},
+                        "created_at": iso_run,
+                        "updated_at": iso_run,
                     }
                 ],
             }
@@ -121,8 +127,6 @@ async def test_execute_job_records_timestamp_state(tmp_path) -> None:
 
         assert isinstance(event, SystemMessageEvent)
         assert event.content == "tick"
-        assert job.state.last_status == "ok"
-        assert job.state.last_error is None
         assert job.state.last_run_at is not None
         assert before <= job.state.last_run_at <= after
 

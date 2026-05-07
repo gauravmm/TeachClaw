@@ -1,9 +1,9 @@
 """Tests for cron schedule types and the in-memory CronStore.
 
 The serialization round-trip is covered by test_cron_serialization.py;
-this file targets the pure logic: schedule.next_run() across the three
+this file targets the pure logic: schedule.next_run() across the two
 schedule kinds, the schedule-discriminator validator on CronJob, and
-the CronStore state machine (add/enable/remove/executed/pop_due).
+the CronStore state machine (add/remove/executed/pop_due).
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ import pytest
 from teachclaw.agent.tools.cron.typesupport import (
     CronJob,
     CronScheduleAt,
-    CronScheduleCron,
     CronScheduleEvery,
     CronStore,
 )
@@ -28,8 +27,8 @@ def _addr() -> MessageAddress:
     return MessageAddress(channel="telegram", chat_id="42")
 
 
-def _job(jid: str, schedule, *, enabled: bool = True) -> CronJob:
-    return CronJob(id=jid, message="ping", deliver_to=_addr(), schedule=schedule, enabled=enabled)
+def _job(jid: str, schedule) -> CronJob:
+    return CronJob(id=jid, message="ping", deliver_to=_addr(), schedule=schedule)
 
 
 # ---------------------------------------------------------------------------
@@ -49,13 +48,24 @@ def test_at_returns_none_when_past():
     assert sched.next_run(datetime(2025, 1, 1, tzinfo=UTC)) is None
 
 
-def test_at_returns_none_when_unset():
-    assert CronScheduleAt(at=None).next_run(datetime(2025, 1, 1, tzinfo=UTC)) is None
+def test_at_first_run_when_ref_is_none():
+    """``ref is None`` (never fired) returns the scheduled time."""
+    target = datetime(2030, 1, 1, tzinfo=UTC)
+    assert CronScheduleAt(at=target).next_run(None) == target
 
 
-def test_every_advances_by_one_interval_after_anchor():
-    """``next_run`` should be the first anchor + N*interval that's strictly
-    after ``dt``. The +1 in the floor formula is what guarantees strictness."""
+def test_every_first_run_at_anchor():
+    """``ref is None`` or ``ref < anchor`` returns the anchor — i.e. the
+    first fire is at anchor itself, not anchor + every."""
+    anchor = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    sched = CronScheduleEvery(every=timedelta(minutes=10), anchor=anchor)
+    assert sched.next_run(None) == anchor
+    assert sched.next_run(anchor - timedelta(minutes=1)) == anchor
+
+
+def test_every_advances_strictly_after_ref_past_anchor():
+    """Once ``ref >= anchor``, ``next_run`` returns the first slot strictly
+    after ``ref``."""
     anchor = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     sched = CronScheduleEvery(every=timedelta(minutes=10), anchor=anchor)
     # Exactly at anchor → next is anchor + 10m.
@@ -73,28 +83,6 @@ def test_every_returns_none_after_until():
     )
     # Past `until` → exhausted.
     assert sched.next_run(anchor + timedelta(hours=1)) is None
-
-
-def test_cron_returns_none_for_empty_expression():
-    assert CronScheduleCron(expr="").next_run(datetime(2025, 1, 1, tzinfo=UTC)) is None
-
-
-def test_cron_returns_none_for_invalid_expression():
-    """The next_run wrapper swallows croniter exceptions to keep the loop
-    alive; verify a syntactically broken expression yields None instead of
-    raising."""
-    assert CronScheduleCron(expr="not a cron").next_run(datetime(2025, 1, 1, tzinfo=UTC)) is None
-
-
-def test_cron_advances_to_next_minute():
-    """``* * * * *`` fires every minute — next_run from 12:00:30 must be
-    12:01:00."""
-    sched = CronScheduleCron(expr="* * * * *", tz="UTC")
-    start = datetime(2026, 1, 1, 12, 0, 30, tzinfo=UTC)
-    nxt = sched.next_run(start)
-    assert nxt is not None
-    assert nxt > start
-    assert nxt - start <= timedelta(minutes=1, seconds=30)
 
 
 # ---------------------------------------------------------------------------
@@ -122,16 +110,6 @@ def test_cronjob_validator_picks_schedule_every_from_dict():
     assert isinstance(j.schedule, CronScheduleEvery)
 
 
-def test_cronjob_validator_picks_schedule_cron_from_dict():
-    j = CronJob(
-        id="x",
-        message="m",
-        deliver_to=_addr(),
-        schedule={"expr": "* * * * *"},
-    )
-    assert isinstance(j.schedule, CronScheduleCron)
-
-
 def test_cronjob_validator_rejects_unknown_schedule_keys():
     with pytest.raises(Exception):  # pydantic wraps as ValidationError
         CronJob(id="x", message="m", deliver_to=_addr(), schedule={"banana": 1})
@@ -143,29 +121,22 @@ def test_cronjob_validator_rejects_unknown_schedule_keys():
 
 
 @pytest.mark.asyncio
-async def test_store_add_queues_enabled_jobs(tmp_path):
+async def test_store_add_keeps_job(tmp_path):
     async with CronStore(tmp_path / "jobs.json") as store:
         store.add(_job("a", CronScheduleEvery(every=timedelta(minutes=5))))
         assert store.next_run_for("a") is not None
 
 
 @pytest.mark.asyncio
-async def test_store_add_skips_queue_when_disabled(tmp_path):
-    async with CronStore(tmp_path / "jobs.json") as store:
-        store.add(_job("a", CronScheduleEvery(every=timedelta(minutes=5)), enabled=False))
-        assert store.get("a") is not None
-        assert store.next_run_for("a") is None
-
-
-@pytest.mark.asyncio
-async def test_store_add_skips_queue_when_schedule_exhausted(tmp_path):
-    """A CronScheduleAt in the past has next_run=None — the job is kept in
-    the store (so the user can still see it) but not queued."""
+async def test_store_past_at_fires_then_self_removes(tmp_path):
+    """A past one-shot fires on the next tick (next_run_for returns ``at``
+    even when ``at < now``), then self-removes via ``executed``."""
     past = datetime(2020, 1, 1, tzinfo=UTC)
     async with CronStore(tmp_path / "jobs.json") as store:
         store.add(_job("a", CronScheduleAt(at=past)))
-        assert store.get("a") is not None
-        assert store.next_run_for("a") is None
+        assert store.next_run_for("a") == past
+        store.executed("a", datetime.now().astimezone())
+        assert store.get("a") is None
 
 
 @pytest.mark.asyncio
@@ -175,29 +146,12 @@ async def test_store_remove_returns_false_if_missing(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_store_remove_clears_store_and_queue(tmp_path):
+async def test_store_remove_clears_store(tmp_path):
     async with CronStore(tmp_path / "jobs.json") as store:
         store.add(_job("a", CronScheduleEvery(every=timedelta(minutes=5))))
         assert store.remove("a") is True
         assert store.get("a") is None
         assert store.next_run_for("a") is None
-
-
-@pytest.mark.asyncio
-async def test_store_enable_toggles_queue(tmp_path):
-    now = datetime(2026, 1, 1, tzinfo=UTC)
-    async with CronStore(tmp_path / "jobs.json") as store:
-        store.add(_job("a", CronScheduleEvery(every=timedelta(minutes=5))))
-        assert store.enable("a", False, now) is True
-        assert store.next_run_for("a") is None
-        assert store.enable("a", True, now) is True
-        assert store.next_run_for("a") is not None
-
-
-@pytest.mark.asyncio
-async def test_store_enable_returns_false_for_unknown_job(tmp_path):
-    async with CronStore(tmp_path / "jobs.json") as store:
-        assert store.enable("nope", True, datetime(2026, 1, 1, tzinfo=UTC)) is False
 
 
 @pytest.mark.asyncio
@@ -209,15 +163,17 @@ async def test_store_executed_removes_one_shot(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_store_executed_reschedules_recurring(tmp_path):
+async def test_store_executed_advances_recurring(tmp_path):
+    """``executed`` stamps ``last_run_at``, which is what ``next_run`` keys
+    off — so next_run_for advances to the slot after the fire time."""
+    anchor = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     async with CronStore(tmp_path / "jobs.json") as store:
-        store.add(_job("a", CronScheduleEvery(every=timedelta(minutes=5))))
-        first = store.next_run_for("a")
-        # Pretend we just executed at the queued time; the next slot moves forward.
-        store.executed("a", first + timedelta(seconds=1))
-        second = store.next_run_for("a")
-        assert second is not None
-        assert second > first
+        store.add(_job("a", CronScheduleEvery(every=timedelta(minutes=5), anchor=anchor)))
+        assert store.next_run_for("a") == anchor
+        store.executed("a", anchor + timedelta(seconds=1))
+        nxt = store.next_run_for("a")
+        assert nxt is not None
+        assert nxt > anchor
 
 
 @pytest.mark.asyncio
@@ -253,7 +209,6 @@ async def test_store_next_wake_returns_earliest(tmp_path):
         store.add(_job("b", CronScheduleEvery(every=timedelta(hours=1), anchor=anchor_b)))
         wake = store.next_wake()
         assert wake is not None
-        # Earliest of the two queued entries is the one anchored earlier.
         assert wake <= store.next_run_for("b")
 
 
@@ -265,32 +220,20 @@ async def test_store_next_wake_returns_none_when_empty(tmp_path):
 
 @pytest.mark.asyncio
 async def test_store_pop_due_returns_only_due_jobs(tmp_path):
-    """``add`` queues each job at its current next_run (computed against
-    real now). Sliding the pop cursor past one entry but before the other
-    must surface only the first."""
+    """``pop_due`` returns jobs whose next fire time is at or before the
+    cursor; jobs with later next fires are skipped."""
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     async with CronStore(tmp_path / "jobs.json") as store:
-        store.add(_job("soon", CronScheduleEvery(every=timedelta(minutes=5))))
-        store.add(_job("later", CronScheduleEvery(every=timedelta(days=30))))
-        soon_at = store.next_run_for("soon")
-        later_at = store.next_run_for("later")
-        assert soon_at is not None and later_at is not None
-        cursor = soon_at + timedelta(seconds=1)
-        assert cursor < later_at  # sanity
+        store.add(_job("soon", CronScheduleEvery(every=timedelta(minutes=5), anchor=now)))
+        store.add(
+            _job(
+                "later",
+                CronScheduleEvery(every=timedelta(days=30), anchor=now + timedelta(days=30)),
+            )
+        )
+        cursor = now + timedelta(seconds=1)
         due = store.pop_due(cursor)
         assert [j.id for j in due] == ["soon"]
-
-
-@pytest.mark.asyncio
-async def test_store_pop_due_skips_disabled_jobs(tmp_path):
-    """Disabled jobs that somehow ended up in the queue must be filtered
-    out at pop time (defence in depth — enable() also drains the queue)."""
-    async with CronStore(tmp_path / "jobs.json") as store:
-        store.add(_job("a", CronScheduleEvery(every=timedelta(minutes=5))))
-        next_at = store.next_run_for("a")
-        # Sneak the job into a disabled state without going through enable().
-        store._store["a"].enabled = False
-        due = store.pop_due(next_at + timedelta(seconds=1))
-        assert due == []
 
 
 @pytest.mark.asyncio
@@ -299,16 +242,6 @@ async def test_store_drops_expired_jobs_on_load(tmp_path):
     survive into the in-memory store, so they're discarded on the next
     write-back."""
     path = tmp_path / "jobs.json"
-    async with CronStore(path) as store:
-        store.add(_job("a", CronScheduleAt(at=datetime(2030, 1, 1, tzinfo=UTC))))
-    # Reopen *after* the AT time has passed.
-    async with CronStore(path) as store:
-        # Force a relative-time check by using a faraway "now"; CronStore.__aenter__
-        # uses now_aware(), so we can only validate the live behavior with a
-        # current-clock test. Use a far-past schedule instead so it's
-        # already-expired regardless of clock.
-        pass
-    # Replace with a now-expired schedule and verify drop:
     async with CronStore(path) as store:
         store.add(_job("b", CronScheduleAt(at=datetime(2020, 1, 1, tzinfo=UTC))))
     async with CronStore(path) as store:
