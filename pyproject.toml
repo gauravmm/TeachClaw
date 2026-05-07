@@ -78,7 +78,10 @@ addopts = "--cov=teachclaw --cov-report=term-missing --cov-report=xml"
 [tool.coverage.run]
 source = ["teachclaw"]
 branch = true
-omit = ["teachclaw/__main__.py"]
+omit = [
+    "teachclaw/__main__.py",
+    "teachclaw/agent/dump.py",
+]
 
 [tool.coverage.report]
 show_missing = true
