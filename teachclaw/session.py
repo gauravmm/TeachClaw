@@ -5,18 +5,17 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Annotated, Any, Literal
 
 from loguru import logger
 from pathvalidate import sanitize_filename
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from teachclaw.bus import MediaMetadata, MessageAddress, ToolResult
-from teachclaw.utils import _parse_timestamp, ensure_aware, now_aware
+from teachclaw.utils import TimestampSerializer, _parse_timestamp, ensure_aware, now_aware
 
 MAX_SESSIONS = 50
 _MAX_REASONING_CHARS = 500
-
-EventKind = Literal["user", "assistant", "tool", "system", "summary", "clear"]
 
 
 @dataclass(frozen=True)
@@ -84,78 +83,47 @@ def _render_user_content(
     return content
 
 
-def _truncate_inline_images(content: object, max_chars: int | None) -> object:
-    if max_chars is None:
-        return content
-    if isinstance(content, list):
-        return [_truncate_inline_images(item, max_chars) for item in content]
-    if isinstance(content, dict):
-        if content.get("type") == "image_url":
-            url = (content.get("image_url") or {}).get("url", "")
-            truncated = url[:max_chars] + "…" if len(url) > max_chars else url
-            return {"type": "image_url", "image_url": {"url": truncated}}
-        return {key: _truncate_inline_images(value, max_chars) for key, value in content.items()}
-    return content
+def _truncate_image_block(block: dict[str, Any], max_chars: int) -> dict[str, Any]:
+    """Shorten an image_url data URL for display profiles. No-op on other blocks."""
+    if block.get("type") != "image_url":
+        return block
+    url = (block.get("image_url") or {}).get("url", "")
+    truncated = url[:max_chars] + "…" if len(url) > max_chars else url
+    return {"type": "image_url", "image_url": {"url": truncated}}
 
 
-@dataclass
-class BaseEvent:
-    timestamp: datetime = field(default_factory=now_aware)
+class _EventBase(BaseModel):
+    """Pydantic base for conversation events.
 
-    def __post_init__(self) -> None:
-        self.timestamp = ensure_aware(self.timestamp)
+    Each subclass declares a ``kind: Literal[...]`` discriminator; the
+    discriminated union :data:`ConversationEvent` is parsed/dumped via the
+    :data:`_event_adapter` ``TypeAdapter`` so the on-disk JSONL is
+    round-trip type-safe.
+    """
 
-    @property
-    def kind(self) -> EventKind:
-        raise NotImplementedError
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    def _record_base(self) -> dict[str, Any]:
-        return {
-            "_type": "event",
-            "kind": self.kind,
-            "timestamp": self.timestamp.isoformat(timespec="seconds"),
-        }
+    timestamp: TimestampSerializer = Field(default_factory=now_aware)
 
     def to_record(self) -> dict[str, Any]:
+        return self.model_dump(mode="json")
+
+    def to_llm_message(self, **_: Any) -> dict[str, Any]:
         raise NotImplementedError
 
-    def to_llm_message(self, **kwargs: Any) -> dict[str, Any]:
-        raise NotImplementedError
 
-
-@dataclass
-class UserEvent(BaseEvent):
-    KIND: ClassVar[Literal["user"]] = "user"
-
+class UserEvent(_EventBase):
+    kind: Literal["user"] = "user"
     content: str = ""
-    metadata: dict[str, Any] = field(default_factory=dict)
-    media: list[str] = field(default_factory=list)
-    media_metadata: list[MediaMetadata] = field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    media: list[str] = Field(default_factory=list)
+    media_metadata: list[MediaMetadata] = Field(default_factory=list)
     sender_id: str | None = None
     sender_label: str | None = None
 
-    def __post_init__(self) -> None:
-        super().__post_init__()
+    def model_post_init(self, _: Any) -> None:
         if self.sender_label is None:
             self.sender_label = _sender_label(self.metadata)
-
-    @property
-    def kind(self) -> Literal["user"]:
-        return self.KIND
-
-    def to_record(self) -> dict[str, Any]:
-        record = {**self._record_base(), "content": self.content}
-        optional_fields = {
-            "metadata": self.metadata or None,
-            "media": self.media or None,
-            "media_metadata": self.media_metadata or None,
-            "sender_id": self.sender_id,
-            "sender_label": self.sender_label,
-        }
-        for key, value in optional_fields.items():
-            if value is not None:
-                record[key] = value
-        return record
 
     def to_llm_message(self, **_: Any) -> dict[str, Any]:
         return {
@@ -169,30 +137,12 @@ class UserEvent(BaseEvent):
         }
 
 
-@dataclass
-class AssistantEvent(BaseEvent):
-    KIND: ClassVar[Literal["assistant"]] = "assistant"
-
+class AssistantEvent(_EventBase):
+    kind: Literal["assistant"] = "assistant"
     content: str = ""
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     tool_calls: list[dict[str, Any]] | None = None
     reasoning_content: str | None = None
-
-    @property
-    def kind(self) -> Literal["assistant"]:
-        return self.KIND
-
-    def to_record(self) -> dict[str, Any]:
-        record = {**self._record_base(), "content": self.content}
-        optional_fields = {
-            "metadata": self.metadata or None,
-            "tool_calls": self.tool_calls,
-            "reasoning_content": self.reasoning_content,
-        }
-        for key, value in optional_fields.items():
-            if value is not None:
-                record[key] = value
-        return record
 
     def to_llm_message(self, *, include_reasoning: bool = True, **_: Any) -> dict[str, Any]:
         message: dict[str, Any] = {"role": "assistant", "content": self.content}
@@ -206,75 +156,46 @@ class AssistantEvent(BaseEvent):
         return message
 
 
-@dataclass
-class ToolEvent(BaseEvent):
-    KIND: ClassVar[Literal["tool"]] = "tool"
-
+class ToolEvent(_EventBase):
+    kind: Literal["tool"] = "tool"
     content: ToolResult = ""
     tool_call_id: str = ""
     tool_name: str = ""
 
-    @property
-    def kind(self) -> Literal["tool"]:
-        return self.KIND
-
-    def to_record(self) -> dict[str, Any]:
-        return {
-            **self._record_base(),
-            "content": self.content,
-            "tool_call_id": self.tool_call_id,
-            "tool_name": self.tool_name,
-        }
-
-    def to_llm_message(self, **kwargs: Any) -> dict[str, Any]:
+    def to_llm_message(
+        self, *, max_inline_image_url_chars: int | None = None, **_: Any
+    ) -> dict[str, Any]:
+        content: ToolResult = self.content
+        if max_inline_image_url_chars is not None and isinstance(content, list):
+            content = [
+                _truncate_image_block(block, max_inline_image_url_chars) for block in content
+            ]
         return {
             "role": "tool",
             "tool_call_id": self.tool_call_id,
             "name": self.tool_name,
-            "content": self.content,
+            "content": content,
         }
 
 
-@dataclass
-class SystemEvent(BaseEvent):
-    KIND: ClassVar[Literal["system"]] = "system"
-
+class SystemEvent(_EventBase):
+    kind: Literal["system"] = "system"
     content: str = ""
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
-    @property
-    def kind(self) -> Literal["system"]:
-        return self.KIND
-
-    def to_record(self) -> dict[str, Any]:
-        record = {**self._record_base(), "content": self.content}
-        if self.metadata:
-            record["metadata"] = self.metadata
-        return record
-
-    def to_llm_message(self, **kwargs: Any) -> dict[str, Any]:
+    def to_llm_message(self, **_: Any) -> dict[str, Any]:
         return {"role": "user", "content": f"<system_event>{self.content}</system_event>"}
 
 
-@dataclass
-class SummaryEvent(BaseEvent):
-    KIND: ClassVar[Literal["summary"]] = "summary"
-
+class SummaryEvent(_EventBase):
+    kind: Literal["summary"] = "summary"
     content: str = ""
 
-    @property
-    def kind(self) -> Literal["summary"]:
-        return self.KIND
-
-    def to_record(self) -> dict[str, Any]:
-        return {**self._record_base(), "content": self.content}
-
-    def to_llm_message(self, **kwargs: Any) -> dict[str, Any]:
+    def to_llm_message(self, **_: Any) -> dict[str, Any]:
         return {"role": "user", "content": self.content}
 
 
-@dataclass
-class ClearEvent(BaseEvent):
+class ClearEvent(_EventBase):
     """Persistence-only marker for /clear and /forgetme.
 
     Written to the JSONL log so the file retains the prior conversation
@@ -282,61 +203,22 @@ class ClearEvent(BaseEvent):
     ClearEvent are dropped from the rendered history.
     """
 
-    KIND: ClassVar[Literal["clear"]] = "clear"
-
+    kind: Literal["clear"] = "clear"
     action: Literal["reset", "forget"] = "reset"
-
-    @property
-    def kind(self) -> Literal["clear"]:
-        return self.KIND
-
-    def to_record(self) -> dict[str, Any]:
-        return {**self._record_base(), "action": self.action}
 
     def to_llm_message(self, **_: Any) -> dict[str, Any]:
         raise NotImplementedError("ClearEvent is a persistence marker; not rendered to LLM")
 
 
-ConversationEvent = UserEvent | AssistantEvent | ToolEvent | SystemEvent | SummaryEvent
+ConversationEvent = Annotated[
+    UserEvent | AssistantEvent | ToolEvent | SystemEvent | SummaryEvent,
+    Field(discriminator="kind"),
+]
+_event_adapter: TypeAdapter[ConversationEvent] = TypeAdapter(ConversationEvent)
 
 
 def event_from_record(record: dict[str, Any]) -> ConversationEvent:
-    kind = record["kind"]
-    timestamp = _parse_timestamp(record["timestamp"])
-    if kind == "user":
-        return UserEvent(
-            timestamp=timestamp,
-            content=str(record.get("content", "")),
-            metadata=dict(record.get("metadata") or {}),
-            media=list(record.get("media") or []),
-            media_metadata=list(record.get("media_metadata") or []),
-            sender_id=record.get("sender_id"),
-            sender_label=record.get("sender_label"),
-        )
-    if kind == "assistant":
-        return AssistantEvent(
-            timestamp=timestamp,
-            content=str(record.get("content", "")),
-            metadata=dict(record.get("metadata") or {}),
-            tool_calls=record.get("tool_calls"),
-            reasoning_content=record.get("reasoning_content"),
-        )
-    if kind == "tool":
-        return ToolEvent(
-            timestamp=timestamp,
-            content=record.get("content", ""),
-            tool_call_id=str(record["tool_call_id"]),
-            tool_name=str(record["tool_name"]),
-        )
-    if kind == "system":
-        return SystemEvent(
-            timestamp=timestamp,
-            content=str(record.get("content", "")),
-            metadata=dict(record.get("metadata") or {}),
-        )
-    if kind == "summary":
-        return SummaryEvent(timestamp=timestamp, content=str(record.get("content", "")))
-    raise ValueError(f"Unsupported event kind: {kind}")
+    return _event_adapter.validate_python(record)
 
 
 @dataclass
@@ -409,15 +291,10 @@ class Session:
         *,
         options: RenderOptions,
     ) -> dict[str, object]:
-        if isinstance(event, AssistantEvent):
-            message = event.to_llm_message(include_reasoning=options.include_reasoning)
-        else:
-            message = event.to_llm_message()
-        message["content"] = _truncate_inline_images(
-            message.get("content", ""),
-            options.max_inline_image_url_chars,
+        return event.to_llm_message(
+            include_reasoning=options.include_reasoning,
+            max_inline_image_url_chars=options.max_inline_image_url_chars,
         )
-        return message
 
     @staticmethod
     def _find_last_reasoning_index(history: list[ConversationEvent]) -> int | None:

@@ -59,6 +59,20 @@ class InboundMessage:
 
 
 @dataclass
+class ToolCallTrace:
+    """One dispatched tool call, optionally with its captured result.
+
+    Carried on :class:`OutboundMessage.tool_calls` so a 🔥 reaction can
+    replay what the agent actually did for that turn.
+    """
+
+    id: str
+    name: str
+    arguments: dict[str, object]
+    result: str | None = None
+
+
+@dataclass
 class OutboundMessage:
     """Message to send to a chat channel."""
 
@@ -66,6 +80,7 @@ class OutboundMessage:
     content: str
     reply_to: str | None = None
     media: list[str] = field(default_factory=list)
+    tool_calls: list[ToolCallTrace] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -83,20 +98,6 @@ class SystemMessageEvent:
     """An internal system prompt injected into the agent's conversation without user involvement."""
 
     content: str
-
-
-@dataclass
-class ToolCallTrace:
-    """One dispatched tool call, optionally with its captured result.
-
-    Channels record these via ``OutboundMessage.metadata['tool_calls']`` so a
-    🔥 reaction can replay what the agent actually did for that turn.
-    """
-
-    id: str
-    name: str
-    arguments: dict[str, object]
-    result: str | None = None
 
 
 @dataclass

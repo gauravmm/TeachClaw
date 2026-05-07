@@ -139,7 +139,7 @@ class ResponseHandler:
             OutboundMessage(
                 address=addr,
                 content=content,
-                metadata={"tool_calls": list(state.tool_call_trace)},
+                tool_calls=list(state.tool_call_trace),
             )
         )
         return TurnOutcome.DONE
@@ -185,7 +185,7 @@ class ResponseHandler:
                 OutboundMessage(
                     address=addr,
                     content=content,
-                    metadata={"tool_calls": list(state.tool_call_trace)},
+                    tool_calls=list(state.tool_call_trace),
                 )
             )
 

@@ -16,7 +16,7 @@ teachclaw/
     compactor.py        Summarisation when prompt nears context budget
     cache_monitor.py    Per-address watchdog for prompt-cache prefix stability
     dump.py             Optional pretty-printed prompt dump for debugging
-    context/            build_system_prompt + Jinja templates
+    templates/          Jinja templates (system_prompt.j2 etc.)
     tools/
       base.py           Tool, ToolContext
       registry.py       ToolRegistry — lifecycle + execution
@@ -181,4 +181,4 @@ Config file: `config.yaml` (created automatically on first run with defaults).
   selected region. Do not read the whole file because it burns context
   quickly.
 - If the system prompt is needed, read
-  `teachclaw/agent/context/templates/system_prompt.j2`.
+  `teachclaw/agent/templates/system_prompt.j2`.

@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import json
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -32,6 +33,24 @@ from teachclaw.storage import _human_size
 from teachclaw.utils import _parse_timestamp, ensure_aware, now_aware
 
 MEDIA_PREFIX = "media"
+
+
+@dataclass(frozen=True)
+class SandboxPath:
+    """Per-conversation media file: ``media/<filename>``."""
+
+    filename: str
+
+
+@dataclass(frozen=True)
+class SharedPath:
+    """File in an operator-configured shared root: ``<alias>/<sub_parts>``."""
+
+    alias: str
+    sub_parts: tuple[str, ...]
+
+
+LogicalMediaPath = SandboxPath | SharedPath
 
 
 def extension_for_mime(mime_type: str | None) -> str:
@@ -211,27 +230,25 @@ class MediaRepository:
         Logical paths are either ``media/<filename>`` (per-conversation
         sandbox) or ``<alias>/<subpath>`` for a configured shared root.
         """
-        kind, *rest = self._resolve_logical(path)
-        if kind == "sandbox":
-            (filename,) = rest
-            relpath = f"{MEDIA_PREFIX}/{filename}"
-            abs_path = self._media_dir(address) / filename
-            if not abs_path.is_file():
-                raise FileNotFoundError(f"Media file not found: {relpath}")
-            entry = self._entries(address).get(relpath)
-            mime_type = entry.mime_type if entry else None
-            if not mime_type:
-                mime_type = filetype.guess_mime(str(abs_path))
-            return abs_path, mime_type
-        # shared
-        alias, sub_parts = rest
-        root = self._shared_roots[alias]
-        candidate = root.joinpath(*sub_parts).resolve()
-        if not candidate.is_relative_to(root):
-            raise ValueError(f"Path escapes shared root '{alias}': {path}")
-        if not candidate.is_file():
-            raise FileNotFoundError(f"Media file not found: {alias}/{'/'.join(sub_parts)}")
-        return candidate, filetype.guess_mime(str(candidate))
+        match self._resolve_logical(path):
+            case SandboxPath(filename):
+                relpath = f"{MEDIA_PREFIX}/{filename}"
+                abs_path = self._media_dir(address) / filename
+                if not abs_path.is_file():
+                    raise FileNotFoundError(f"Media file not found: {relpath}")
+                entry = self._entries(address).get(relpath)
+                mime_type = entry.mime_type if entry else None
+                if not mime_type:
+                    mime_type = filetype.guess_mime(str(abs_path))
+                return abs_path, mime_type
+            case SharedPath(alias, sub_parts):
+                root = self._shared_roots[alias]
+                candidate = root.joinpath(*sub_parts).resolve()
+                if not candidate.is_relative_to(root):
+                    raise ValueError(f"Path escapes shared root '{alias}': {path}")
+                if not candidate.is_file():
+                    raise FileNotFoundError(f"Media file not found: {alias}/{'/'.join(sub_parts)}")
+                return candidate, filetype.guess_mime(str(candidate))
 
     def image_block(self, address: MessageAddress, path: str) -> dict[str, object]:
         abs_path, mime_type = self.resolve_file(address, path)
@@ -267,8 +284,7 @@ class MediaRepository:
         return blocks
 
     def set_caption(self, address: MessageAddress, path: str, caption: str) -> None:
-        kind, *_ = self._resolve_logical(path)
-        if kind != "sandbox":
+        if not isinstance(self._resolve_logical(path), SandboxPath):
             raise ValueError(f"Cannot annotate media in a read-only shared root: {path}")
         relpath = self._normalize_relpath(path)
         abs_path, mime_type = self.resolve_file(address, relpath)
@@ -330,12 +346,12 @@ class MediaRepository:
                     self._save(addr)
         return deleted
 
-    def _resolve_logical(self, path: str) -> tuple:
+    def _resolve_logical(self, path: str) -> LogicalMediaPath:
         """Classify a logical media path.
 
-        Returns ``("sandbox", filename)`` for ``media/<filename>`` or
-        ``("shared", alias, sub_parts)`` for ``<alias>/<subpath>``.
-        Raises ``ValueError`` for malformed or escape-attempting paths.
+        Returns a :class:`SandboxPath` for ``media/<filename>`` or a
+        :class:`SharedPath` for ``<alias>/<subpath>``. Raises
+        ``ValueError`` for malformed or escape-attempting paths.
         """
         rel = Path(path)
         if rel.is_absolute():
@@ -353,24 +369,24 @@ class MediaRepository:
         if head == MEDIA_PREFIX:
             if len(rest) != 1:
                 raise ValueError(f"Sandbox paths must look like 'media/<filename>': {path}")
-            return ("sandbox", rest[0])
+            return SandboxPath(filename=rest[0])
         if head in self._shared_roots:
             if not rest:
                 raise ValueError(
                     f"Shared media path must include a subpath: '{head}/<filename>': {path}"
                 )
-            return ("shared", head, tuple(rest))
+            return SharedPath(alias=head, sub_parts=tuple(rest))
         raise ValueError(
             f"Unknown media root '{head}'. Expected 'media/' or one of: "
             f"{', '.join(sorted(self._shared_roots) or ['<none configured>'])}"
         )
 
     def _normalize_relpath(self, path: str) -> str:
-        kind, *rest = self._resolve_logical(path)
-        if kind == "sandbox":
-            return f"{MEDIA_PREFIX}/{rest[0]}"
-        alias, sub_parts = rest
-        return f"{alias}/{'/'.join(sub_parts)}"
+        match self._resolve_logical(path):
+            case SandboxPath(filename):
+                return f"{MEDIA_PREFIX}/{filename}"
+            case SharedPath(alias, sub_parts):
+                return f"{alias}/{'/'.join(sub_parts)}"
 
     @staticmethod
     def _next_serial(entries: dict[str, MediaEntry], media_dir: Path, prefix: str) -> str:

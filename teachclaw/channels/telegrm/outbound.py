@@ -47,8 +47,7 @@ async def send(channel: "TelegramChannel", msg: OutboundMessage) -> None:
         return
 
     text, citations = cit.strip_citations(msg.content)
-    raw_tool_calls = msg.metadata.get("tool_calls") if msg.metadata else None
-    record = ReplyRecord(content=msg.content, tool_calls=list(raw_tool_calls or []))
+    record = ReplyRecord(content=msg.content, tool_calls=list(msg.tool_calls))
 
     segments = await plan_segments(channel, msg, text)
     sent_ids = [mid async for mid in dispatch(channel, chat_id, segments)]
