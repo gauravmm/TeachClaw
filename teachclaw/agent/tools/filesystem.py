@@ -32,8 +32,6 @@ def _resolve_path(path: str, ctx: ToolContext, *, write: bool = False) -> Path:
     - The post-resolve target must lie within at least one of the
       configured roots (``storage_root`` + ``read_roots``, or
       ``storage_root`` + ``write_roots`` when ``write=True``).
-    - ``..`` segments are caught implicitly: after ``.resolve()`` any escape
-      fails the within-root check.
     """
     if ctx.storage_root is None:
         raise RuntimeError("ToolContext.storage_root is required for filesystem tools.")
@@ -49,6 +47,7 @@ def _resolve_path(path: str, ctx: ToolContext, *, write: bool = False) -> Path:
     resolved = (base / path).expanduser().resolve()
     if resolved in ctx.forbidden_files:
         raise PermissionError(f"Path '{path}' is not readable.")
+
     extra = ctx.write_roots if write else ctx.read_roots
     sandbox_roots = (ctx.storage_root.resolve(),) + tuple(r.resolve() for r in extra)
     if not any(_is_within(resolved, root) for root in sandbox_roots):
@@ -61,16 +60,12 @@ def _resolve_path(path: str, ctx: ToolContext, *, write: bool = False) -> Path:
 
 def _display_path(path: Path, ctx: ToolContext) -> str:
     """Return a sandbox- or workspace-relative display path when possible."""
-    candidates: list[Path] = []
-    if ctx.storage_root is not None:
-        candidates.append(ctx.storage_root.resolve())
-        candidates.extend(r.resolve() for r in ctx.read_roots)
-    candidates.append(ctx.workspace)
-    for root in candidates:
-        try:
-            return str(path.relative_to(root))
-        except ValueError:
-            continue
+    for root in [ctx.storage_root] + list(ctx.read_roots) + [ctx.workspace]:
+        if root:
+            try:
+                return str(path.relative_to(root.resolve()))
+            except ValueError:
+                continue
     return str(path)
 
 
