@@ -11,7 +11,7 @@ import asyncio
 from dataclasses import dataclass, field
 from enum import Enum
 
-from teachclaw.bus import ToolCallTrace, ToolResultEvent
+from teachclaw.bus import SystemMessageEvent, ToolCallTrace, ToolResultEvent
 from teachclaw.session import Session, SystemEvent, ToolEvent
 
 
@@ -30,7 +30,7 @@ class TurnOutcome(Enum):
 @dataclass
 class AddressState:
     iteration_count: int = 0
-    pending_system_events: list[str] = field(default_factory=list)
+    pending_system_events: list[SystemMessageEvent] = field(default_factory=list)
     pending_media: list[str] = field(default_factory=list)
     # Tool calls dispatched since the most recent user message, in order.
     # Reset whenever a new user message arrives.

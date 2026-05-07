@@ -62,22 +62,30 @@ def read_profile(workspace: Path, addr: MessageAddress) -> str | None:
 
 
 def listing_for_user(workspace: Path, addr: MessageAddress) -> str:
-    """Compact, deterministic listing of the user's own storage root.
-
-    Format: a header line with the relative path, then one line per child
-    (sorted), with files showing a human size and directories showing a
-    count of immediate children. Timestamps are deliberately omitted so
-    writes that don't change names/sizes don't invalidate the prompt-cache
-    prefix this listing sits next to.
-    """
+    """Compact, deterministic listing of the user's own storage root."""
     root = storage_root(workspace, addr)
-    rel_root = root.relative_to(workspace) if root.is_relative_to(workspace) else root
+    header = str(root.relative_to(workspace) if root.is_relative_to(workspace) else root)
+    return listing_for_dir(root, header=header)
+
+
+def listing_for_dir(root: Path, *, header: str) -> str:
+    """Compact, deterministic directory listing.
+
+    Header line, then one line per child (sorted), with files showing a
+    human size and directories showing a count of immediate children.
+    Timestamps are deliberately omitted so writes that don't change
+    names/sizes don't invalidate the prompt-cache prefix this listing
+    sits next to.
+    """
     if not root.exists():
-        return f"{rel_root}/: (empty)"
-    children = sorted(root.iterdir(), key=lambda p: p.name)
+        return f"{header}/: (empty)"
+    try:
+        children = sorted(root.iterdir(), key=lambda p: p.name)
+    except OSError:
+        children = []
     if not children:
-        return f"{rel_root}/: (empty)"
-    lines = [f"{rel_root}/:"]
+        return f"{header}/: (empty)"
+    lines = [f"{header}/:"]
     for child in children:
         if child.is_file():
             try:

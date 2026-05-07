@@ -16,8 +16,10 @@ from telegram import (
     BotCommandScopeAllPrivateChats,
     BotCommandScopeChat,
     BotCommandScopeDefault,
+    Chat,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    Message,
     Update,
 )
 from telegram.ext import ContextTypes
@@ -148,12 +150,9 @@ async def announce_persona_switch(
 async def cmd_start(
     channel: "TelegramChannel", update: Update, _ctx: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    if not await gate(channel, update, allow_unauth=True):
+    if (mc := await _gated_msg_chat(channel, update, allow_unauth=True)) is None:
         return
-    msg = update.effective_message
-    chat = update.effective_chat
-    if not (msg and chat):
-        return
+    msg, chat = mc
     # Republish the menu so users who saw the old command list from a
     # previous deployment get the current one.
     await refresh_command_menu(channel)
@@ -260,17 +259,39 @@ async def _require_group_admin(
     return False
 
 
-async def cmd_personality(
-    channel: "TelegramChannel", update: Update, _ctx: ContextTypes.DEFAULT_TYPE
-) -> None:
-    if not await gate(channel, update):
-        return
-    if not await _require_group_admin(channel, update, "/personality"):
-        return
+async def _gated_msg_chat(
+    channel: "TelegramChannel",
+    update: Update,
+    *,
+    allow_unauth: bool = False,
+    group_admin_label: str | None = None,
+) -> tuple[Message, Chat] | None:
+    """Run the standard handler prelude: gate + optional group-admin
+    check + ``(msg, chat)`` extraction.
+
+    Returns the typed ``(msg, chat)`` pair on success, or ``None`` when
+    any check failed (the gate or admin helper has already reported the
+    reason to the user). Handlers that need ``user`` should pull it
+    after calling this — most don't.
+    """
+    if not await gate(channel, update, allow_unauth=allow_unauth):
+        return None
+    if group_admin_label and not await _require_group_admin(channel, update, group_admin_label):
+        return None
     msg = update.effective_message
     chat = update.effective_chat
     if not (msg and chat):
+        return None
+    return msg, chat
+
+
+async def cmd_personality(
+    channel: "TelegramChannel", update: Update, _ctx: ContextTypes.DEFAULT_TYPE
+) -> None:
+    mc = await _gated_msg_chat(channel, update, group_admin_label="/personality")
+    if mc is None:
         return
+    msg, chat = mc
     addr = channel.addr(chat.id)
     text = (msg.text or "").split(maxsplit=1)
     if len(text) >= 2:
@@ -387,14 +408,10 @@ async def _handle_dismiss_callback(query) -> None:
 async def cmd_clear(
     channel: "TelegramChannel", update: Update, _ctx: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    if not await gate(channel, update):
+    mc = await _gated_msg_chat(channel, update, group_admin_label="/clear")
+    if mc is None:
         return
-    if not await _require_group_admin(channel, update, "/clear"):
-        return
-    msg = update.effective_message
-    chat = update.effective_chat
-    if not (msg and chat):
-        return
+    msg, chat = mc
     addr = channel.addr(chat.id)
     await channel.bus.publish_inbound(addr, SessionControlEvent(action="reset"))
     st = channel.user_state(chat.id)
@@ -407,14 +424,10 @@ async def cmd_clear(
 async def cmd_forgetme(
     channel: "TelegramChannel", update: Update, _ctx: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    if not await gate(channel, update, allow_unauth=True):
+    mc = await _gated_msg_chat(channel, update, allow_unauth=True, group_admin_label="/forgetme")
+    if mc is None:
         return
-    if not await _require_group_admin(channel, update, "/forgetme"):
-        return
-    msg = update.effective_message
-    chat = update.effective_chat
-    if not (msg and chat):
-        return
+    msg, chat = mc
     addr = channel.addr(chat.id)
     await channel.bus.publish_inbound(addr, SessionControlEvent(action="forget"))
     st = channel.user_state(chat.id)

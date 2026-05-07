@@ -67,7 +67,7 @@ class ChannelManager:
                 msg = await self.bus.consume_outbound(channel=name)
                 try:
                     if isinstance(msg, TypingEvent):
-                        await channel._handle_typing(msg)
+                        await channel.notify_typing(msg)
                     else:
                         await channel.send(msg)
                 except Exception as e:

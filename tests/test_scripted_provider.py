@@ -61,8 +61,8 @@ def test_scripted_provider_requires_responses(tmp_path: Path) -> None:
         ScriptedProvider.from_fixture(fixture)
 
 
-def test_scripted_response_from_dict_round_trip() -> None:
-    sr = ScriptedResponse.from_dict(
+def test_scripted_response_round_trip() -> None:
+    sr = ScriptedResponse.model_validate(
         {
             "content": "hi",
             "tool_calls": [{"name": "n", "arguments": {"a": 1}}],

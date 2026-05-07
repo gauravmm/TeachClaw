@@ -129,8 +129,8 @@ class AgentLoop:
 
     @staticmethod
     def _flush_pending_system_events(session: Session, state: AddressState) -> None:
-        for content in state.pending_system_events:
-            session.append(SystemEvent(content=content))
+        for pending in state.pending_system_events:
+            session.append(SystemEvent(content=pending.content))
         state.pending_system_events.clear()
 
     @staticmethod
@@ -209,7 +209,7 @@ class AgentLoop:
         for event in batch.system_events:
             if tracker.pending:
                 logger.debug(f"SystemEvent buffered (tools in flight): {event.content[:60]}")
-                state.pending_system_events.append(event.content)
+                state.pending_system_events.append(event)
             else:
                 session.append(SystemEvent(content=event.content))
                 needs_llm = True

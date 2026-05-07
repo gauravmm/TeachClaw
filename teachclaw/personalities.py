@@ -31,8 +31,8 @@ class Personality:
 
 _CACHE: dict[Path, dict[str, Personality]] = {}
 
-
-_FALLBACK_DEFAULT = Personality("default", "Default", "Neutral assistant.", "")
+_DEFAULT_NAME = "default"
+_FALLBACK_DEFAULT = Personality(_DEFAULT_NAME, "Default", "Neutral assistant.", "")
 
 
 def _parse(path: Path) -> list[Personality]:
@@ -55,10 +55,6 @@ def _load(workspace: Path) -> dict[str, Personality]:
     if cached is not None:
         return cached
     path = workspace / "personalities.yaml"
-    # Boot-time validate_workspace() guarantees this file exists in
-    # production. Tests sometimes spin up a bare workspace, so tolerate
-    # absence by falling back to a single 'default' persona rather than
-    # crashing per-turn.
     items = _parse(path) if path.exists() else [_FALLBACK_DEFAULT]
     by_name = {p.name: p for p in items}
     _CACHE[workspace] = by_name
@@ -76,13 +72,16 @@ def _personality_path(workspace: Path, addr: MessageAddress) -> Path:
 def read_personality(workspace: Path, addr: MessageAddress) -> Personality:
     by_name = _load(workspace)
     path = _personality_path(workspace, addr)
-    name = "default"
+    name = _DEFAULT_NAME
     if path.exists():
         try:
-            name = path.read_text(encoding="utf-8").strip() or "default"
+            name = path.read_text(encoding="utf-8").strip() or _DEFAULT_NAME
         except OSError:
             pass
-    return by_name.get(name) or by_name["default"]
+    # Boot-time validate_workspace() guarantees the "default" persona
+    # exists. If `name` was an unknown user-supplied value, fall back to
+    # default; an absent default is a programmer error and KeyErrors.
+    return by_name.get(name) or by_name[_DEFAULT_NAME]
 
 
 def write_personality(workspace: Path, addr: MessageAddress, name: str) -> Personality | None:

@@ -24,42 +24,42 @@ points ``provider.api_base`` (yes, reused) at the fixture path.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 from loguru import logger
+from pydantic import BaseModel, Field, model_validator
 
 from teachclaw.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
 
-@dataclass
-class ScriptedResponse:
+class _ScriptedToolCall(BaseModel):
+    """Looser variant of ToolCallRequest for fixture parsing.
+
+    The id auto-fills to ``tc<index>`` if omitted; this is the only
+    transformation the old hand-rolled ``from_dict`` did beyond plain
+    field copying.
+    """
+
+    id: str | None = None
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class ScriptedResponse(BaseModel):
     content: str = ""
-    tool_calls: list[ToolCallRequest] = field(default_factory=list)
+    tool_calls: list[_ScriptedToolCall] = Field(default_factory=list)
     finish_reason: str = "stop"
     usage_total: int = 0
     balloon: int = 0  # if > 0, generate that many characters of filler text
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ScriptedResponse":
-        raw_calls = data.get("tool_calls") or []
-        calls = [
-            ToolCallRequest(
-                id=str(tc.get("id") or f"tc{i}"),
-                name=str(tc["name"]),
-                arguments=dict(tc.get("arguments") or {}),
-            )
-            for i, tc in enumerate(raw_calls)
-        ]
-        return cls(
-            content=str(data.get("content") or ""),
-            tool_calls=calls,
-            finish_reason=str(data.get("finish_reason") or "stop"),
-            usage_total=int(data.get("usage_total") or 0),
-            balloon=int(data.get("balloon") or 0),
-        )
+    @model_validator(mode="after")
+    def _autofill_tool_call_ids(self) -> "ScriptedResponse":
+        for i, tc in enumerate(self.tool_calls):
+            if not tc.id:
+                tc.id = f"tc{i}"
+        return self
 
     def to_response(self) -> LLMResponse:
         content = self.content
@@ -75,7 +75,10 @@ class ScriptedResponse:
             }
         return LLMResponse(
             content=content,
-            tool_calls=list(self.tool_calls),
+            tool_calls=[
+                ToolCallRequest(id=tc.id or "", name=tc.name, arguments=dict(tc.arguments))
+                for tc in self.tool_calls
+            ],
             finish_reason=self.finish_reason,
             usage=usage,
         )
@@ -100,7 +103,7 @@ class ScriptedProvider(LLMProvider):
             data = yaml.safe_load(text)
         if not isinstance(data, dict) or "responses" not in data:
             raise ValueError(f"{path} must be a mapping with a 'responses' list")
-        responses = [ScriptedResponse.from_dict(item) for item in data["responses"]]
+        responses = [ScriptedResponse.model_validate(item) for item in data["responses"]]
         logger.info(f"Loaded {len(responses)} scripted responses from {path}")
         return cls(responses)
 

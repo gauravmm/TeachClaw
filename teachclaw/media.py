@@ -29,7 +29,7 @@ from pydantic import BaseModel, ConfigDict
 
 from teachclaw import storage as storage_layout
 from teachclaw.bus import MessageAddress
-from teachclaw.storage import _human_size
+from teachclaw.storage import listing_for_dir
 from teachclaw.utils import _parse_timestamp, ensure_aware, now_aware
 
 MEDIA_PREFIX = "media"
@@ -119,38 +119,15 @@ class MediaRepository:
 
         Used in the synthetic ``<storage_listing>`` turn so the model
         can discover what's reachable. Returns ``None`` when no shared
-        roots are configured. Lists files (with sizes) and immediate
-        subdirectory item counts, alpha-sorted, no timestamps — same
-        cache-stable shape as ``storage.listing_for_user``.
+        roots are configured. Same cache-stable shape as
+        ``storage.listing_for_user``.
         """
         if not self._shared_roots:
             return None
-        sections: list[str] = []
-        for alias in sorted(self._shared_roots):
-            root = self._shared_roots[alias]
-            section_lines = [f"{alias}/:"]
-            try:
-                children = sorted(root.iterdir(), key=lambda p: p.name)
-            except OSError:
-                children = []
-            for child in children:
-                if child.is_file():
-                    try:
-                        size = child.stat().st_size
-                    except OSError:
-                        size = 0
-                    section_lines.append(f"  {child.name} ({_human_size(size)})")
-                elif child.is_dir():
-                    try:
-                        count = sum(1 for _ in child.iterdir())
-                    except OSError:
-                        count = 0
-                    suffix = "" if count == 0 else f" ({count} item{'s' if count != 1 else ''})"
-                    section_lines.append(f"  {child.name}/{suffix}")
-            if len(section_lines) == 1:
-                section_lines[0] = f"{alias}/: (empty)"
-            sections.append("\n".join(section_lines))
-        return "\n".join(sections)
+        return "\n".join(
+            listing_for_dir(self._shared_roots[alias], header=alias)
+            for alias in sorted(self._shared_roots)
+        )
 
     def _meta_path(self, address: MessageAddress) -> Path:
         return storage_layout.storage_root(self.workspace, address) / ".media.json"

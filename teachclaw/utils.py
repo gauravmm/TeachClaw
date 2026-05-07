@@ -4,47 +4,13 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, TypeAlias
 
-import jsonlines
 from pydantic import BeforeValidator, PlainSerializer
 from pytimeparse.timeparse import timeparse
 
 if TYPE_CHECKING:
     from teachclaw.bus import MessageAddress
-
-
-class JsonlIO:
-    """Namespaced helpers for reading/writing JSONL files."""
-
-    @staticmethod
-    def read(path: Path) -> list[Any]:
-        """Read all valid entries from a JSONL file; returns [] if file doesn't exist."""
-        try:
-            with jsonlines.open(path) as reader:
-                return list(reader.iter(skip_invalid=True))
-        except FileNotFoundError:
-            return []
-
-    @staticmethod
-    def write(path: Path, entries: list[dict]) -> None:
-        """Overwrite a JSONL file with entries."""
-        with jsonlines.open(path, mode="w") as writer:
-            writer.write_all(entries)
-
-    @staticmethod
-    def append(path: Path, entries: list[dict]) -> None:
-        """Append entries to a JSONL file."""
-        with jsonlines.open(path, mode="a") as writer:
-            writer.write_all(entries)
-
-
-def truncate_string(s: str, max_len: int = 100, suffix: str = "...") -> str:
-    """Truncate a string to max length, adding suffix if truncated."""
-    if len(s) <= max_len:
-        return s
-    return s[: max_len - len(suffix)] + suffix
 
 
 def parse_duration(value: timedelta | int | float | str, positive: bool = True) -> timedelta:

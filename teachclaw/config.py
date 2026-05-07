@@ -146,41 +146,39 @@ class Config(BaseSettings):
     model_config = ConfigDict(env_prefix="BENCHCLAW_", env_nested_delimiter="__")  # type: ignore
 
 
-class ConfigManager:
-    """Context manager that loads config on enter and saves it on exit."""
+def _save_config(config: Config, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        yaml.dump(config.model_dump(), f, default_flow_style=False, allow_unicode=True)
 
-    def __init__(self, config_path: Path = Path("config.yaml")):
-        self._path = config_path
-        self.config: Config | None = None
-        self._write_on_exit = False
 
-    def __enter__(self) -> Config:
-        if self._path.exists():
-            try:
-                with open(self._path) as f:
-                    data = yaml.safe_load(f) or {}
-                self.config = Config.model_validate(data)
-            except (yaml.YAMLError, ValueError) as e:
-                logger.warning(f"Failed to load config from {self._path}: {e}")
-                logger.warning("Using default configuration.")
-                self.config = Config()
-        else:
-            self._write_on_exit = True
-            self.config = Config()
+def load_config(path: Path = Path("config.yaml")) -> Config:
+    """Load and validate config, writing a defaults file on first run.
 
-        # Validate the lesson-pack workspace and apply its infra overlay on
-        # top of the global config. Done here so a misconfigured workspace
-        # blocks startup with a clear error rather than failing later in
-        # the agent loop. See spec/SWITCHMODE.md.
-        from teachclaw import lessons
+    1. Read ``path`` (or instantiate :class:`Config` with defaults when the
+       file is absent — and immediately persist those defaults so the user
+       has something to edit).
+    2. Validate the lesson-pack workspace and merge its infra overlay,
+       so a misconfigured workspace blocks startup with a clear error
+       rather than failing later in the agent loop. See
+       ``spec/SWITCHMODE.md``.
+    """
+    if path.exists():
+        try:
+            with open(path) as f:
+                data = yaml.safe_load(f) or {}
+            config = Config.model_validate(data)
+        except (yaml.YAMLError, ValueError) as e:
+            logger.warning(f"Failed to load config from {path}: {e}")
+            logger.warning("Using default configuration.")
+            config = Config()
+    else:
+        config = Config()
+        _save_config(config, path)
 
-        lessons.validate_workspace(self.config.workspace_path)
-        overlay = lessons.load_infra_overlay(self.config.workspace_path)
-        lessons.merge_infra_into_config(self.config, overlay)
-        return self.config
+    from teachclaw import lessons
 
-    def __exit__(self, *_) -> None:
-        if self._write_on_exit and self.config:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self._path, "w") as f:
-                yaml.dump(self.config.model_dump(), f, default_flow_style=False, allow_unicode=True)
+    lessons.validate_workspace(config.workspace_path)
+    overlay = lessons.load_infra_overlay(config.workspace_path)
+    lessons.merge_infra_into_config(config, overlay)
+    return config
