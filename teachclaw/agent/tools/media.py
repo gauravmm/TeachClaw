@@ -40,8 +40,6 @@ class ReadMediaTool(Tool):
             )
         )
 
-    Params: ClassVar[type[BaseModel]] = Params
-
     def __init__(self, shared_roots_blurb: str = "") -> None:
         self._shared_roots_blurb = shared_roots_blurb
 
@@ -93,8 +91,6 @@ class SendMediaTool(Tool):
             ),
         )
 
-    Params: ClassVar[type[BaseModel]] = Params
-
     def __init__(self, shared_roots_blurb: str = "") -> None:
         self._shared_roots_blurb = shared_roots_blurb
 
@@ -141,8 +137,6 @@ class AnnotateMediaTool(Tool):
             )
         )
         caption: str = Field(description="Caption or annotation text to persist with the file.")
-
-    Params: ClassVar[type[BaseModel]] = Params
 
     @classmethod
     def build(cls, _config: None, _ctx: ToolContext) -> "AnnotateMediaTool":

@@ -2,7 +2,7 @@
 
 import re
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -110,8 +110,6 @@ class ReadFileTool(Tool):
     class Params(BaseModel):
         path: str = Field(description="The file path to read, where . is the workspace dir.")
 
-    Params: ClassVar[type[BaseModel]] = Params
-
     @classmethod
     def build(cls, _config: None, _ctx: ToolContext) -> "ReadFileTool":
         return cls()
@@ -147,8 +145,6 @@ class WriteFileTool(Tool):
     class Params(BaseModel):
         path: str = Field(description="The file path to write, where . is the workspace dir.")
         content: str = Field(description="The content to write")
-
-    Params: ClassVar[type[BaseModel]] = Params
 
     @classmethod
     def build(cls, _config: None, ctx: ToolContext) -> "WriteFileTool":
@@ -187,8 +183,6 @@ class EditFileTool(Tool):
         path: str = Field(description="The file path to edit, where . is the workspace dir.")
         old_str: str = Field(description="The exact text to find and replace")
         new_str: str = Field(description="The text to replace with")
-
-    Params: ClassVar[type[BaseModel]] = Params
 
     @classmethod
     def build(cls, _config: None, _ctx: ToolContext) -> "EditFileTool":
@@ -248,8 +242,6 @@ class GlobTool(Tool):
         max_results: int = Field(
             default=200, ge=1, description="Maximum number of matches to return"
         )
-
-    Params: ClassVar[type[BaseModel]] = Params
 
     @classmethod
     def build(cls, _config: None, _ctx: ToolContext) -> "GlobTool":
@@ -317,8 +309,6 @@ class GrepTool(Tool):
         max_results: int = Field(
             default=200, ge=1, description="Maximum number of matching lines to return"
         )
-
-    Params: ClassVar[type[BaseModel]] = Params
 
     @classmethod
     def build(cls, _config: None, _ctx: ToolContext) -> "GrepTool":

@@ -4,7 +4,7 @@ import asyncio
 import os
 import re
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -26,8 +26,6 @@ class ExecTool(Tool):
         working_dir: str | None = Field(
             default=None, description="Optional working directory for the command"
         )
-
-    Params: ClassVar[type[BaseModel]] = Params
 
     @classmethod
     def build(cls, config: "ExecToolConfig | None", ctx: ToolContext) -> "ExecTool":

@@ -4,7 +4,7 @@ import html
 import json
 import os
 import re
-from typing import Any, ClassVar, Literal
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 import httpx
@@ -59,8 +59,6 @@ class WebSearchTool(Tool):
     class Params(BaseModel):
         query: str = Field(description="Search query")
         count: int | None = Field(default=None, ge=1, le=10, description="Results (1-10)")
-
-    Params: ClassVar[type[BaseModel]] = Params
 
     @property
     def name(self) -> str:
@@ -119,8 +117,6 @@ class WebFetchTool(Tool):
         url: str = Field(description="URL to fetch")
         extractMode: Literal["markdown", "text"] = Field(default="markdown")
         maxChars: int | None = Field(default=None, ge=100)
-
-    Params: ClassVar[type[BaseModel]] = Params
 
     @property
     def name(self) -> str:

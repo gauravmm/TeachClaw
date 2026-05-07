@@ -4,7 +4,7 @@ import contextlib
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Any, Literal
 
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -71,8 +71,6 @@ class CronTool(Tool):
             ),
         )
         job_id: str | None = Field(default=None, description="Job ID (for remove)")
-
-    Params: ClassVar[type[BaseModel]] = Params
 
     @classmethod
     def build(cls, config: None, ctx: ToolContext) -> "CronTool":
