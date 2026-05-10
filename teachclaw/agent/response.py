@@ -30,20 +30,6 @@ from teachclaw.config import AgentConfig
 from teachclaw.providers.base import LLMResponse, ToolCallRequest
 from teachclaw.session import AssistantEvent, Session
 
-# When any of these MCP tool prefixes returns a result, the agent loop drops
-# a one-shot system reminder right after the ToolEvent so the citation rule
-# is the most recent thing the model sees before composing its reply. Small
-# models (Gemma-class) won't reliably follow a rule that lives only in the
-# system prompt.
-CITATION_TOOL_PREFIXES: tuple[str, ...] = ("kb__",)
-CITATION_REMINDER = (
-    "You just received results from a knowledge-base tool. Every claim in "
-    "your next reply that draws on these results MUST be wrapped as "
-    '<citation id="ID_FROM_RECORD">claim sentence</citation>, copying the '
-    "`id` field verbatim from each record. Untagged paraphrase of kb "
-    "content is not acceptable. The closing </citation> is required."
-)
-
 CITATION_MAX_RETRIES = 1
 
 

@@ -182,6 +182,16 @@ class SystemEvent(_EventBase):
     kind: Literal["system"] = "system"
     content: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # Ephemeral events stay in session.jsonl for replay fidelity but the
+    # renderer hides them once a UserEvent appears at a later index. See
+    # spec/TOOL_REMINDERS.md.
+    ephemeral: bool = False
+
+    def to_record(self) -> dict[str, Any]:
+        record = super().to_record()
+        if not self.ephemeral:
+            record.pop("ephemeral", None)
+        return record
 
     def to_llm_message(self, **_: Any) -> dict[str, Any]:
         return {"role": "user", "content": f"<system_event>{self.content}</system_event>"}
@@ -350,6 +360,8 @@ class Session:
         last_user_idx = self._last_user_index(history)
         messages: list[dict[str, object]] = []
         for i, event in enumerate(history):
+            if isinstance(event, SystemEvent) and event.ephemeral and i <= last_user_idx:
+                continue
             rendered_event = self._maybe_elide_tool_event(
                 event, i, last_user_idx, options.elide_tool_names
             )

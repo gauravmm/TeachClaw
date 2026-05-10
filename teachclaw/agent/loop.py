@@ -17,8 +17,6 @@ from teachclaw.agent.dump import dump_messages
 from teachclaw.agent.loop_state import AddressState, ToolCallTracker, TurnOutcome
 from teachclaw.agent.prompt import PromptBuild, PromptBuilder
 from teachclaw.agent.response import (
-    CITATION_REMINDER,
-    CITATION_TOOL_PREFIXES,
     ResponseHandler,
     stringify_tool_result,
 )
@@ -54,6 +52,7 @@ class AgentLoop:
     ):
         self.workspace_path = config.workspace_path
         self.config = config.agents.master
+        self.tool_reminders = config.tool_reminders
         self.bus = bus
         self.provider = provider
         self.debug_dump_dir = debug_dump_dir
@@ -77,6 +76,33 @@ class AgentLoop:
         )
         self.compactor = Compactor(provider, self.config, self.prompt_builder)
         self.response = ResponseHandler(bus, self.tools, self.config)
+
+        if self.tool_reminders:
+            summary = ", ".join(
+                f"{name}{' (ephemeral)' if r.ephemeral else ''}"
+                for name, r in sorted(self.tool_reminders.items())
+            )
+            logger.info(f"Loaded {len(self.tool_reminders)} tool reminders: {summary}")
+
+    def _warn_about_reminders(self) -> None:
+        """After the tool registry is active, flag reminders for tools that
+        aren't registered or that combine ephemeral with terminal_when_lone
+        (the next render only happens after a UserEvent, by which point the
+        ephemeral is hidden — effectively a no-op). See spec/TOOL_REMINDERS.md
+        open question #2.
+        """
+        for name, reminder in self.tool_reminders.items():
+            if name not in self.tools:
+                logger.warning(
+                    f"tool_reminders entry for unknown tool '{name}' (no built-in or MCP "
+                    "tool registered with that name)"
+                )
+                continue
+            if reminder.ephemeral and self.tools.is_terminal_when_lone(name):
+                logger.warning(
+                    f"tool_reminders['{name}'] is ephemeral but the tool is terminal_when_lone; "
+                    "the reminder will be hidden before the next render and have no effect"
+                )
 
     @staticmethod
     def _collapse_user_messages(messages: list[InboundMessage]) -> UserEvent:
@@ -182,21 +208,14 @@ class AgentLoop:
         address loop should run an LLM turn after this batch."""
         needs_llm = False
 
-        nudge_citations = False
         for result in batch.tool_results:
             tracker.handle_result(result, session)
             for entry in state.tool_call_trace:
                 if entry.id == result.tool_call_id:
                     entry.result = stringify_tool_result(result.result)
                     break
-            if any(result.tool_name.startswith(p) for p in CITATION_TOOL_PREFIXES):
-                nudge_citations = True
         if batch.tool_results and not tracker.pending:
             self._flush_pending_system_events(session, state)
-            # One reminder per batch is enough: dropping it once right before
-            # the LLM call is what makes the rule "current" in context.
-            if nudge_citations:
-                session.append(SystemEvent(content=CITATION_REMINDER))
             if self.response.prior_turn_was_terminal(session):
                 # The prior assistant turn used only terminal_when_lone
                 # tools (e.g. send_media), which deliver the user-visible
@@ -257,7 +276,7 @@ class AgentLoop:
 
     async def _address_loop(self, addr: MessageAddress) -> None:
         session = self.sessions.get(addr)
-        tracker = ToolCallTracker()
+        tracker = ToolCallTracker(self.tool_reminders)
         storage_layout.ensure_user_dirs(self.workspace_path, addr)
         call_ctx = ToolContext(
             workspace=self.workspace_path,
@@ -299,6 +318,7 @@ class AgentLoop:
         async with contextlib.AsyncExitStack() as stack:
             await stack.enter_async_context(self.sessions)
             await stack.enter_async_context(self.tools)
+            self._warn_about_reminders()
             logger.info("Agent loop started")
             new_addr_queue = self.bus.subscribe_new_addresses()
 

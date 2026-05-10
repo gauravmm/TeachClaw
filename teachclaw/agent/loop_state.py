@@ -10,9 +10,13 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from teachclaw.bus import SystemMessageEvent, ToolCallTrace, ToolResultEvent
 from teachclaw.session import Session, SystemEvent, ToolEvent
+
+if TYPE_CHECKING:
+    from teachclaw.config import ToolReminder
 
 
 class TurnOutcome(Enum):
@@ -44,9 +48,10 @@ class AddressState:
 class ToolCallTracker:
     """Per-address tracker for in-flight background tool calls."""
 
-    def __init__(self) -> None:
+    def __init__(self, reminders: dict[str, ToolReminder] | None = None) -> None:
         self._in_flight: dict[str, str] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+        self._reminders: dict[str, ToolReminder] = reminders or {}
 
     @property
     def tasks(self) -> dict[str, asyncio.Task]:
@@ -81,6 +86,8 @@ class ToolCallTracker:
                 tool_name=event.tool_name,
             )
         )
+        if reminder := self._reminders.get(event.tool_name):
+            session.append(SystemEvent(content=reminder.text, ephemeral=reminder.ephemeral))
         if event.tool_call_id in self._in_flight:
             del self._in_flight[event.tool_call_id]
             return

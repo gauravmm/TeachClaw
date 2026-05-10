@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import yaml
 from loguru import logger
@@ -115,6 +116,24 @@ class MermaidConfig(BaseModel):
     mmdc_path: str | None = None
 
 
+class ToolReminder(BaseModel):
+    """A nudge appended to session history right after a configured tool returns.
+
+    See spec/TOOL_REMINDERS.md. ``ephemeral`` reminders are hidden by the
+    renderer once a UserEvent appears at a later index.
+    """
+
+    text: str
+    ephemeral: bool = False
+
+    @field_validator("text")
+    @classmethod
+    def _non_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("tool_reminders text must be non-empty")
+        return v
+
+
 class ChannelConfigs(BaseModel):
     """Optional built-in channel configuration."""
 
@@ -137,6 +156,15 @@ class Config(BaseSettings):
     media: MediaConfig = Field(default_factory=MediaConfig)
     mermaid: MermaidConfig = Field(default_factory=MermaidConfig)
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
+    tool_reminders: dict[str, ToolReminder] = Field(default_factory=dict)
+
+    @field_validator("tool_reminders", mode="before")
+    @classmethod
+    def _coerce_reminder_strings(cls, v: Any) -> Any:
+        # Accept bare strings as shorthand for {"text": "...", "ephemeral": False}.
+        if not v:
+            return {}
+        return {k: ({"text": entry} if isinstance(entry, str) else entry) for k, entry in v.items()}
 
     @property
     def workspace_path(self) -> Path:
